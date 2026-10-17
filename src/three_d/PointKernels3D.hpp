@@ -3,6 +3,7 @@
 #include <cmath>
 #include <cstddef>
 #include "Seis3D/KernelTypes3D.hpp"
+#include "SeisCommon/FiniteDifference.hpp"
 #ifdef __CUDACC__
 #define SEIS_POINT __host__ __device__ inline
 #else
@@ -21,23 +22,8 @@ SEIS_POINT double localMu(const Mesh& g,std::size_t q){return g.materialMu?g.mat
 SEIS_POINT double localDensity(const Mesh& g,std::size_t q){return g.materialDensity?g.materialDensity[q]:g.density;}
 struct Fields {double* f[9]{};};
 // fd_t.c FD_Flags: step-dependent direction pairs, reversed at EVERY RK substage.
-SEIS_POINT int direction(int step,int stage,int axis) {
-    const int flags[8][3]{{0,0,0},{1,1,0},{1,1,1},{0,0,1},{0,1,0},{1,0,0},{1,0,1},{0,1,1}};
-    return (flags[step%8][axis]+stage)%2;
-}
-SEIS_POINT int stencil(int dir,int depth,int* offsets,double* coefficients) {
-    // Near-surface velocity closure: first order at depth 1, biased at depth 2.
-    // Full five-point DRP for momentum (depth=-1) and velocity at depth>=3.
-    const int n=depth==1?2:depth==2?3:5;
-    const double forward[5]{-0.30874,-0.6326,1.233,-0.3334,0.04168};
-    const double lower[3]{-7.0/6,8.0/6,-1.0/6};
-    for(int l=0;l<n;++l) {
-        const int pos=n==5?l-1:l;
-        const double c=n==5?forward[l]:n==3?lower[l]:l==0?-1.0:1.0;
-        offsets[l]=dir?-pos:pos;coefficients[l]=dir?-c:c;
-    }
-    return n;
-}
+SEIS_POINT int direction(int step,int stage,int axis){return SeisWave::Difference::direction(step,stage,axis);}
+SEIS_POINT int stencil(int dir,int depth,int* offsets,double* coefficients){return SeisWave::Difference::stencil(dir,depth,offsets,coefficients);}
 SEIS_POINT std::size_t index(const Mesh& g,int i,int j,int k) {return i+static_cast<std::size_t>(g.nx)*(j+static_cast<std::size_t>(g.ny)*k);}
 SEIS_POINT double derivative(const double* v,const Mesh& g,std::size_t q,int axis,int dir,int depth=-1) {
     const std::ptrdiff_t s=axis==0?1:axis==1?g.nx:static_cast<std::ptrdiff_t>(g.nx)*g.ny;

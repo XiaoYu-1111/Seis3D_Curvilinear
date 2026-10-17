@@ -8,6 +8,7 @@
 | --- | --- |
 | `CMakeLists.txt`、`CMakePresets.json`、`CMakeSettings.json`、`cmake` | 独立构建入口和外部输出布局 |
 | `src`、`include` | CPU/CUDA、界面、I/O 与验证代码 |
+| `src/common`、`src/two_d`、`src/three_d` | 共享基础服务、独立二维与三维实现；各维度含自己的 ui |
 | `resources/icons`、`resources/AppIcon.rc.in`、`shaders` | 应用原始资源 |
 | `docs`、`docs/images` | 学术说明、操作说明和发表图片 |
 | `tools` | 分析、导出验证、参考提取及博客打包工具 |
@@ -22,6 +23,8 @@
 所有构建和运行输出写入仓库父目录的 `out`，从仓库查看即 `../out`：构建缓存、对象文件、EXE/DLL/LIB/PDB、生成的 RC 和参考头、模拟 VTS/CSV、UI 偏好、原始 PPM、分析结果、文档/博客发布目录及 ZIP。个人 SDK 设置放在被忽略的 `CMakeUserPresets.json`。
 
 博客发表内容由仓库内 `docs/PROJECT_MANUAL.md` 及图片生成，发布包无需重复提交到源码仓库。完整图文在 GitHub 上可通过 README 和文档导航阅读。
+
+外层输出按用途整理：当前缓存保留在 `build/x64-Release`、`build/x64-Debug`，界面检查位于 `validation/ui`，二维截图位于 `screenshots/two-d`，数值数据位于 `validation`，用户二维导出位于 `2d`。旧独立构建副本和未压缩截图可清理；不要将其回填到源码目录。说明和博客只使用已复核的仓库内 PNG。
 
 `.gitignore` 提供误操作保护，不能取消已经跟踪的文件。提交前可用 `git status --short`、`git diff --stat` 和 `git ls-files` 检查清单，确认没有新加入的二进制、缓存、个人路径或 Git 凭据。本次整理不自动提交或推送。
 

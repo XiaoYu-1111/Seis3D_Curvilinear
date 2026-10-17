@@ -303,7 +303,7 @@ E=\sum_{physical}Jh^3\left[\frac{\rho|v|^2}{2}+
 
 ## 12. CPU/OpenMP、CUDA 与数据传输
 
-CPU 与 CUDA 共用 `src/PointKernels3D.hpp` 的点算子。CPU 对物理点循环做 OpenMP 并行；CUDA 用持久 SoA 数组保存九场、四个 RK 斜率、中间场及基础场，边界、右端和 RK 组合都在 GPU 上执行。Float64、不启用 fast-math，并关闭 CUDA FMA 收缩以便对照；其他设备或编译设置不承诺逐位一致。
+CPU 与 CUDA 共用 `src/three_d/PointKernels3D.hpp` 的点算子。CPU 对物理点循环做 OpenMP 并行；CUDA 用持久 SoA 数组保存九场、四个 RK 斜率、中间场及基础场，边界、右端和 RK 组合都在 GPU 上执行。Float64、不启用 fast-math，并关闭 CUDA FMA 收缩以便对照；其他设备或编译设置不承诺逐位一致。
 
 初始化几何和参数校验在主机端完成，然后上传 CUDA。交互显示回传三个紧凑切片、接收值和归约统计；完整体积仅在快照/VTS 导出时下载。GPU 分配前检查可用显存，失败不静默改用 CPU。显示关闭面板或网格不改变求解器、dt、接收采样或边界。
 
@@ -325,12 +325,12 @@ CPU 与 CUDA 共用 `src/PointKernels3D.hpp` 的点算子。CPU 对物理点循�
 
 | 源码 | 对应内容 |
 |---|---|
-| `src/CurvilinearSolver.cpp` | 网格生成、度量、CFL、震源权重、RK4 调度、接收和有效步提交 |
-| `src/PointKernels3D.hpp` | 物理梯度、九方程、自由表面、虚节点、能量密度 |
-| `src/CudaEngine3D.cu` | 持久显存、CUDA 核执行、归约与紧凑回传 |
+| `src/three_d/CurvilinearSolver.cpp` | 网格生成、度量、CFL、震源权重、RK4 调度、接收和有效步提交 |
+| `src/three_d/PointKernels3D.hpp` | 物理梯度、九方程、自由表面、虚节点、能量密度 |
+| `src/three_d/CudaEngine3D.cu` | 持久显存、CUDA 核执行、归约与紧凑回传 |
 | `include/Seis3D/TraceProcessing.hpp` | 记录 AGC、极值预览、密度重采样 |
-| `src/ui/VisualSettings3D.hpp` | 统一色带采样、网格颜色与显示设置 |
-| `src/ui/GuiApp.cpp`、`SceneRenderer3D.cpp` | 物理曲网格切片、逐节点网格线、色标和交互 |
+| `src/three_d/ui/VisualSettings3D.hpp` | 统一色带采样、网格颜色与显示设置 |
+| `src/three_d/ui/GuiApp.cpp`、`SceneRenderer3D.cpp` | 物理曲网格切片、逐节点网格线、色标和交互 |
 
 基础配方参考已随项目注明许可的 CGFD3D 本地源码；边界闭合与当前实现的差异以本文及 `NUMERICS_AND_VALIDATION.md` 为准。参考界面中的 CPML 字样属于参考项目，本项目当前吸收层仍为上述海绵。
 
@@ -345,7 +345,7 @@ CPU 与 CUDA 共用 `src/PointKernels3D.hpp` 的点算子。CPU 对物理点循�
 
 界面处用突变的逐节点材料系数，没有专门的界面拟合通量或高阶接触条件修正。光滑区传播算子的精度结论不能直接用于突变界面；需要反射/透射基准及网格加密对照。最薄层少于两个单元或某层未被任何物理节点覆盖时显示警告，用户表格中的 5 m 薄层推荐至少 h=1 m 的几何分辨率，再结合主频检查 PPW。
 
-新增 `src/MaterialValidation.cpp` 检查：均匀层等价于原均匀介质、五层表格的边界和物性、同 k 全平面物性一致、三种坐标模式、材料 VTS、分层完整源窗传播及 CPU/CUDA 九场和三分量记录。详细参数见 [层状模型](LAYERED_MODELS.md)。
+新增 `src/three_d/MaterialValidation.cpp` 检查：均匀层等价于原均匀介质、五层表格的边界和物性、同 k 全平面物性一致、三种坐标模式、材料 VTS、分层完整源窗传播及 CPU/CUDA 九场和三分量记录。详细参数见 [层状模型](LAYERED_MODELS.md)。
 
 
 ## 16. 采集几何与按有效时间步计时

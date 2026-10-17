@@ -1,4 +1,5 @@
 #include "CudaEngine3D.hpp"
+#include "../common/CudaSupport.cuh"
 #include <cuda_runtime.h>
 #include <algorithm>
 #include <stdexcept>
@@ -6,25 +7,9 @@
 namespace Seis3D::Curvilinear {
 namespace {
 constexpr int blockSize=128;
-void checked(cudaError_t code,const char* action) {
-    if(code!=cudaSuccess)throw std::runtime_error(std::string("CUDA ")+action+": "+cudaGetErrorString(code));
-}
-struct DeviceScope {
-    int previous{-1},device;
-    explicit DeviceScope(int selected):device(selected) {
-        if(cudaGetDevice(&previous)!=cudaSuccess){cudaGetLastError();previous=-1;}
-        checked(cudaSetDevice(device),"select device");
-    }
-    ~DeviceScope(){if(previous>=0&&previous!=device)cudaSetDevice(previous);}
-};
-struct DeviceBuffer {
-    void* pointer{};
-    int device{-1};
-    ~DeviceBuffer(){if(pointer){int previous=-1;cudaGetDevice(&previous);if(cudaSetDevice(device)==cudaSuccess)cudaFree(pointer);if(previous>=0&&previous!=device)cudaSetDevice(previous);}}
-    void allocate(std::size_t bytes){checked(cudaGetDevice(&device),"buffer device");checked(cudaMalloc(&pointer,bytes),"allocation");checked(cudaMemset(pointer,0,bytes),"zero buffer");}
-    double* doubles() const{return static_cast<double*>(pointer);}
-    void upload(const void* source,std::size_t bytes){allocate(bytes);checked(cudaMemcpy(pointer,source,bytes,cudaMemcpyHostToDevice),"upload");}
-};
+using SeisWave::Cuda::checked;
+using SeisWave::Cuda::DeviceScope;
+using SeisWave::Cuda::DeviceBuffer;
 __device__ bool physical(Point::Mesh g,int& i,int& j,int& k,std::size_t q) {
     i=static_cast<int>(q%g.nx);j=static_cast<int>((q/g.nx)%g.ny);k=static_cast<int>(q/(static_cast<std::size_t>(g.nx)*g.ny));
     return i>=ghostWidth3D&&i<g.nx-ghostWidth3D&&j>=ghostWidth3D&&j<g.ny-ghostWidth3D&&k>=ghostWidth3D&&k<g.nz-ghostWidth3D;
@@ -91,31 +76,6 @@ struct CudaEngine3D::Impl {
     void project(Point::Fields w){surfaceKernel<<<surfaceBlocks,blockSize>>>(w,mesh);checked(cudaGetLastError(),"surface projection launch");}
     void rhs(Point::Fields w,Point::Fields out,double value,int step,int stage){rhsKernel<<<blocks,blockSize>>>(w,out,mesh,value,step,stage);checked(cudaGetLastError(),"RHS launch");}
 };
-CudaDeviceInventory3D queryCudaDevices3D() {
-    CudaDeviceInventory3D inventory;
-    int count=0;const auto status=cudaGetDeviceCount(&count);
-    if(status!=cudaSuccess){inventory.description=std::string("CUDA unavailable: ")+cudaGetErrorString(status);cudaGetLastError();return inventory;}
-    if(count==0){inventory.description="No CUDA device detected.";return inventory;}
-    for(int index=0;index<count;++index) {
-        CudaDeviceInfo3D device;device.index=index;device.name="CUDA GPU "+std::to_string(index);
-        try {
-            cudaDeviceProp properties{};checked(cudaGetDeviceProperties(&properties,index),"device properties");
-            device.name=properties.name;device.computeMajor=properties.major;device.computeMinor=properties.minor;device.totalMemoryBytes=properties.totalGlobalMem;
-            char bus[32]{};if(cudaDeviceGetPCIBusId(bus,sizeof(bus),index)==cudaSuccess)device.pciBusId=bus;else cudaGetLastError();
-            if(properties.major<6)device.description="CUDA backend requires compute capability >= 6.0.";
-            else {
-                DeviceScope scope(index);cudaFuncAttributes attributes{};
-                checked(cudaFuncGetAttributes(&attributes,rhsKernel),"kernel unavailable for this device");
-                std::size_t free=0,total=0;checked(cudaMemGetInfo(&free,&total),"memory query");
-                device.freeMemoryBytes=free;device.totalMemoryBytes=total;device.available=true;device.description="Available";
-            }
-        } catch(const std::exception& ex){device.description=ex.what();cudaGetLastError();}
-        inventory.devices.push_back(std::move(device));
-    }
-    inventory.description=std::to_string(count)+" CUDA device(s) detected.";
-    return inventory;
-}
-std::uint64_t queryCudaMemory3D(int device){try {DeviceScope scope(device);std::size_t freeBytes=0,total=0;checked(cudaMemGetInfo(&freeBytes,&total),"memory query");return freeBytes;}catch(...){cudaGetLastError();return 0;}}
 CudaEngine3D::CudaEngine3D(const Point::Mesh& mesh,const std::vector<ReceiverTrace3D>& receivers,int device):impl_(std::make_unique<Impl>()) {
     auto& s=*impl_;s.device=device;DeviceScope scope(device);s.mesh=mesh;
     std::size_t freeBytes=0,totalBytes=0;checked(cudaMemGetInfo(&freeBytes,&totalBytes),"memory query");

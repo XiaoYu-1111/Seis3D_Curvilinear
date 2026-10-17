@@ -102,6 +102,11 @@ def main():
 
     doc_files=['PROJECT_MANUAL.md','SCREENSHOT_GALLERY.md','README.md','LICENSE','THIRD_PARTY_NOTICES.md']
     doc_files += ['images/'+row['png'] for row in rows]+['images/dispersion-comparison.png']
+    # Additional published UI images (e.g. the 2D/3D home screen) are not part
+    # of the original 18-shot 3D numerical capture series or its metadata.
+    for bang,label,target in TOKEN.findall(body):
+        if bang and target.startswith('images/') and target not in doc_files:
+            doc_files.append(target)
     (github/'_posts').mkdir(parents=True,exist_ok=True)
     hexo_post.parent.mkdir(parents=True,exist_ok=True)
     for destination in [github_assets,hexo_post]:
@@ -164,7 +169,7 @@ assets 下的 PROJECT_MANUAL.md / SCREENSHOT_GALLERY.md 为普通相对路径 Ma
             assert Path(path).name==path and (hexo_post/path).is_file(),path
     assert body.count('$$')%2==0 and body.count('```')%2==0,'Unbalanced math/code delimiters'
     report=dict(updated='2026-10-17',sections=5,appendices=8,native_screenshots=len(rows),native_size=[2560,1494],markdown_pages_checked=sum(f.endswith('.md') for f in doc_files),github_article='github-pages/_posts/2026-10-16-seis3d-curvilinear.md',hexo_article='hexo/source/_posts/seis3d-curvilinear.md',hexo_image_format='markdown-bare-filename',pixel_hashes_verified=True)
-    report_path=OUTPUT/'documentation-work/package-validation.json'
+    report_path=OUTPUT/'maintenance/package-validation.json'
     report_path.parent.mkdir(parents=True,exist_ok=True)
     report_path.write_text(json.dumps(report,ensure_ascii=False,indent=2),encoding='utf-8')
     blog_files=['README.md','github-pages/_posts/2026-10-16-seis3d-curvilinear.md','hexo/source/_posts/seis3d-curvilinear.md']

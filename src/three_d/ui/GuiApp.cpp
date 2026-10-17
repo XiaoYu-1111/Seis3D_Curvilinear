@@ -5,6 +5,8 @@
 #include "imgui_impl_glfw.h"
 #include "imgui_impl_opengl3.h"
 #include "SceneRenderer3D.hpp"
+#include "AppRuntime.hpp"
+#include "Workbench3D.hpp"
 #include "Presentation3D.hpp"
 #include "RecordView3D.hpp"
 #include "Seis3D/ModelPresets3D.hpp"
@@ -129,7 +131,7 @@ struct Workbench3D {
     bool groupsExpanded{};
     std::unordered_map<ImGuiID,int> groupApplied;
     bool running{},dirty{},resetLayout{true};
-    bool shortcutHelp{};
+    bool shortcutHelp{},homeRequested{};ImRect homeRect;
     BackendMemory3D memoryAvailable;
     BackendKind3D memoryBackend{BackendKind3D::Cpu};
     int memoryDevice{-2};
@@ -156,7 +158,7 @@ struct Workbench3D {
         std::ifstream input(outputRoot3D()/"ui"/"preferences.cfg");std::string key;double value=0;
         while(input>>key>>value) {
             if(!std::isfinite(value))continue;
-            if(key=="font")uiFontSize=static_cast<float>(std::clamp(value,18.0,26.0));
+            if(key=="font")uiFontSize=static_cast<float>(std::clamp(value,16.0,28.0));
             else if(key=="theme")theme=static_cast<int>(std::clamp(value,0.0,double(themeCount3D-1)));
             else if(key=="language")setLanguage3D(static_cast<int>(value!=0));
             else if(key=="layout")layoutPreset=static_cast<int>(std::clamp(value,0.0,3.0));
@@ -435,6 +437,8 @@ struct Workbench3D {
     void toolbar() {
         dirty=edited!=simulation->parameters()||selectedBackend!=static_cast<int>(simulation->backendInfo().kind)||computeSettings!=activeComputeSettings;
         if(ImGui::BeginMainMenuBar()) {
+            if(functionButton3D("Home",FunctionRole3D::Model))homeRequested=true;
+            homeRect={ImGui::GetItemRectMin(),ImGui::GetItemRectMax()};ImGui::SameLine();
             ImGui::TextColored(palette3D().accent,"SEIS3D");
             if(ImGui::BeginMenu(label3D("Workspace"))) {
                 if(ImGui::MenuItem(label3D("Reset layout [F]")))restoreWorkspace();
@@ -447,7 +451,7 @@ struct Workbench3D {
             }
             if(ImGui::BeginMenu(label3D("Appearance"))) {
                 ImGui::TextUnformatted(tr3D("Interface font size (px)"));
-                ImGui::SliderFloat("##menuFont",&uiFontSize,18,26,"%.0f px");ImGui::EndMenu();
+                ImGui::SliderFloat("##menuFont",&uiFontSize,16,28,"%.0f px");ImGui::EndMenu();
             }
             const float languageWidth=std::max(140.0f,ImGui::GetFontSize()*7),themeWidth=std::max(185.0f,ImGui::GetFontSize()*11);
             const float right=ImGui::GetWindowWidth()-languageWidth-themeWidth-24;
@@ -856,7 +860,7 @@ struct Workbench3D {
                 }
                 if(group("Theme & text",true)) {
                     themeSelector("##theme",ImGui::GetContentRegionAvail().x);
-                    ImGui::TextUnformatted(tr3D("Interface font size (px)"));ImGui::SetNextItemWidth(-1);ImGui::SliderFloat(label3D("##fontSize"),&uiFontSize,18,26,"%.0f px");
+                    ImGui::TextUnformatted(tr3D("Interface font size (px)"));ImGui::SetNextItemWidth(-1);ImGui::SliderFloat(label3D("##fontSize"),&uiFontSize,16,28,"%.0f px");
                 }
                 ImGui::EndTabItem();
             }
@@ -1112,11 +1116,11 @@ struct Workbench3D {
     }
     void shortcutWindow() {
         if(!shortcutHelp)return;
-        const auto* viewport=ImGui::GetMainViewport();ImGui::SetNextWindowPos(viewport->GetCenter(),ImGuiCond_Appearing,{.5f,.5f});ImGui::SetNextWindowSize({std::min(620.0f,viewport->WorkSize.x*.9f),std::min(580.0f,viewport->WorkSize.y*.85f)},ImGuiCond_Appearing);
+        const auto* viewport=ImGui::GetMainViewport();ImGui::SetNextWindowPos(viewport->GetCenter(),ImGuiCond_Appearing,{.5f,.5f});ImGui::SetNextWindowSize({std::min(1120.0f,viewport->WorkSize.x*.94f),std::min(390.0f,viewport->WorkSize.y*.75f)},ImGuiCond_Appearing);
         if(ImGui::Begin(label3D("Keyboard shortcuts"),&shortcutHelp,ImGuiWindowFlags_NoDocking|ImGuiWindowFlags_NoCollapse)) {
             const char* rows[][2]{{"Space","Run / pause"},{"N","Single step"},{"C","Clear active fields and records"},{"R","Fit views [R]"},{"Q / Shift+Q","Next / previous wave palette"},{"W / Shift+W","Next / previous wave component"},{"E / Shift+E","Next / previous model palette"},{"G","Slice grid overlay"},{"B","Show absorbing region"},{"V","Three planes in 3D"},{"F1 / Esc","Open / close shortcut help"},{"F","Reset layout [F]"},{"Ctrl+S","Export current snapshot"},{"Tab","Move focus between controls"}};
-            if(ImGui::BeginTable("##shortcutTable",2,ImGuiTableFlags_BordersInnerH|ImGuiTableFlags_RowBg)){for(const auto& row:rows){ImGui::TableNextRow();ImGui::TableNextColumn();ImGui::TextUnformatted(row[0]);ImGui::TableNextColumn();ImGui::TextWrapped("%s",tr3D(row[1]));}ImGui::EndTable();}
-            ImGui::TextWrapped(tr3D("Matches the regular-grid 3D shortcuts. Editing controls or open menus suspend shortcuts. This workbench uses V for 3D slice visibility and Tab for control focus; it has no Home page."));
+            if(ImGui::BeginTable("##shortcutTable",6,ImGuiTableFlags_BordersInnerH|ImGuiTableFlags_RowBg)){int column=0;for(const auto& row:rows){if(column++%3==0)ImGui::TableNextRow();ImGui::TableNextColumn();ImGui::TextUnformatted(row[0]);ImGui::TableNextColumn();ImGui::TextWrapped("%s",tr3D(row[1]));}ImGui::EndTable();}
+            ImGui::TextWrapped("%s",language3D()?"编辑控件或打开菜单时暂停快捷键。主页结束当前会话并返回维度选择。":"Editing or open menus suspend shortcuts. Home ends this session and returns to dimension selection.");
             ImGui::TextWrapped(tr3D("C clears the active run in place, retaining geometry, dt, gains and staged edits. Apply / rebuild is required to apply edited parameters."));
         }
         ImGui::End();
@@ -1137,6 +1141,7 @@ bool captureFrame3D(const std::filesystem::path& output,int width,int height) {
 // Runs a self-contained OpenGL/ImGui workspace; --smoke simulates, captures and exits for automated startup checks.
 int runWorkbench3D(int argc,char** argv) {
     const std::string mode=argc>1?argv[1]:"";
+    const bool routeSmoke=mode=="--smoke-route-3d";
     const bool resizeSmoke=mode=="--smoke-resize";
     const bool deviceSmoke=mode=="--smoke-devices";
     const bool cudaSmoke=mode=="--smoke-cuda"||deviceSmoke;
@@ -1153,44 +1158,19 @@ int runWorkbench3D(int argc,char** argv) {
     const bool workspaceSmoke=mode=="--smoke-workspace";
     const bool recordsSmoke=mode=="--smoke-records";
     const bool uiSmoke=mode=="--smoke-ui" || recordsSmoke || workspaceSmoke || layersSmoke || acquisitionSmoke || navigationSmoke || boundarySmoke || colorbarSmoke || cflSmoke || modelDisplaySmoke || gridConfigSmoke;
-    const bool smoke=mode=="--smoke" || resizeSmoke || cudaSmoke || uiSmoke || commandSmoke || workflowCapture;
+    const bool smoke=mode=="--smoke" || resizeSmoke || cudaSmoke || uiSmoke || commandSmoke || workflowCapture || routeSmoke;
     std::string catalogError;
     if(!validateCatalog3D(catalogError)){std::cerr<<catalogError<<'\n';return 1;}
     std::error_code ec;std::filesystem::create_directories(outputRoot3D()/"ui",ec);
     if(ec){std::cerr<<ec.message()<<'\n';return 1;}
-    glfwSetErrorCallback([](int,const char* description){std::cerr<<"GLFW: "<<description<<'\n';});
-    if(!glfwInit())return 2;
-    glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR,4);glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR,3);glfwWindowHint(GLFW_OPENGL_PROFILE,GLFW_OPENGL_CORE_PROFILE);
-    glfwWindowHint(GLFW_VISIBLE,GLFW_FALSE);glfwWindowHint(GLFW_SAMPLES,4);
-    GLFWwindow* window=glfwCreateWindow(1600,1000,"SeisWave Lab - Seis3D Curvilinear | CPU / CUDA",nullptr,nullptr);
-    if(!window){glfwTerminate();return 3;}
-#if defined(_WIN32) && defined(SEIS3D_HAS_APP_ICON)
-    const auto bigIcon=static_cast<HICON>(LoadImageW(GetModuleHandleW(nullptr),MAKEINTRESOURCEW(101),IMAGE_ICON,GetSystemMetrics(SM_CXICON),GetSystemMetrics(SM_CYICON),LR_SHARED));
-    const auto smallIcon=static_cast<HICON>(LoadImageW(GetModuleHandleW(nullptr),MAKEINTRESOURCEW(101),IMAGE_ICON,GetSystemMetrics(SM_CXSMICON),GetSystemMetrics(SM_CYSMICON),LR_SHARED));
-    if(!bigIcon||!smallIcon){std::cerr<<"Application icon resource missing\n";glfwDestroyWindow(window);glfwTerminate();return 13;}
-    SendMessageW(glfwGetWin32Window(window),WM_SETICON,ICON_BIG,reinterpret_cast<LPARAM>(bigIcon));
-    SendMessageW(glfwGetWin32Window(window),WM_SETICON,ICON_SMALL,reinterpret_cast<LPARAM>(smallIcon));
-#endif
-    glfwSetWindowSizeLimits(window,960,640,GLFW_DONT_CARE,GLFW_DONT_CARE);
-    glfwMakeContextCurrent(window);glfwSwapInterval(smoke?0:1);glewExperimental=GL_TRUE;
-    if(glewInit()!=GLEW_OK){glfwDestroyWindow(window);glfwTerminate();return 4;}
-    while(glGetError()!=GL_NO_ERROR){}
-    IMGUI_CHECKVERSION();ImGui::CreateContext();ImPlot::CreateContext();auto& io=ImGui::GetIO();io.ConfigFlags|=ImGuiConfigFlags_DockingEnable;
+    SeisWave::Ui::AppRuntime host;std::string hostError;
+    if(!host.open("SeisWave Lab - 3D Curvilinear | CPU / CUDA",smoke,hostError)){std::cerr<<hostError<<'\n';return 2;}
+    GLFWwindow* window=host.window();auto& io=ImGui::GetIO();
     const std::string ini=utf8Path3D(outputRoot3D()/"ui"/(smoke?"smoke.ini":"workspace.ini"));io.IniFilename=smoke?nullptr:ini.c_str();
-    ImFontConfig font;font.SizePixels=20.0f;
-    bool fontLoaded=false;
-#ifdef _WIN32
-    std::array<wchar_t,32768> windowsDirectory{};
-    if(GetWindowsDirectoryW(windowsDirectory.data(),static_cast<UINT>(windowsDirectory.size()))>0) {
-        const auto systemFont=std::filesystem::path(windowsDirectory.data())/"Fonts"/"msyh.ttc";
-        if(std::filesystem::exists(systemFont))fontLoaded=io.Fonts->AddFontFromFileTTF(utf8Path3D(systemFont).c_str(),20.0f)!=nullptr;
-    }
-#endif
-    if(!fontLoaded)io.Fonts->AddFontDefault(&font);applyTheme3D(3);
-    if(!ImGui_ImplGlfw_InitForOpenGL(window,true)||!ImGui_ImplOpenGL3_Init("#version 430")){ImPlot::DestroyContext();ImGui::DestroyContext();glfwDestroyWindow(window);glfwTerminate();return 5;}
+    bool returnToHome=false;
     int result=0;
     {
-        Workbench3D app;if(!smoke)app.loadPreferences();app.resetLayout=smoke || !std::filesystem::exists(outputRoot3D()/"ui"/"workspace.ini");
+        Workbench3D app;const int entryLanguage=language3D(),entryTheme=themeIndex3D();if(!smoke){app.loadPreferences();setLanguage3D(entryLanguage);app.theme=entryTheme;app.uiFontSize=SeisWave::Ui::interfaceFontSize();applyTheme3D(entryTheme);}app.resetLayout=smoke || !std::filesystem::exists(outputRoot3D()/"ui"/"workspace.ini");
         if(cudaSmoke)app.selectedBackend=1;
         if(acquisitionSmoke)app.selectedBackend=0; // Deliberate CPU reference, then an identical CUDA run.
         if(acquisitionSmoke)app.edited.receiverArray={ReceiverArrayKind3D::GridXY,2,2,1,12,8,1,1};
@@ -1264,7 +1244,7 @@ int runWorkbench3D(int argc,char** argv) {
         const auto rawFingerprint=[&]{std::uint64_t hash=1469598103934665603ULL;for(const auto& r:app.simulation->receivers())for(const auto* samples:{&r.samples,&r.samplesVx,&r.samplesVy})for(double v:*samples){hash^=std::bit_cast<std::uint64_t>(v);hash*=1099511628211ULL;}return hash;};
         const auto originalRaw=rawFingerprint();
         const double commandDt=app.simulation->dt();const auto commandParameters=app.simulation->parameters();const auto* commandCoordinates=app.simulation->grid().coordinates.data();
-        const auto reviewDirectory=outputRoot3D()/(gridConfigSmoke?"grid-config-review":modelDisplaySmoke?"model-display-review":cflSmoke?"cfl-review":colorbarSmoke?"colorbar-review":boundarySmoke?"boundary-review":navigationSmoke?"navigation-review":acquisitionSmoke?"acquisition-review":layersSmoke?"layers-review":workspaceSmoke?"workspace-review":recordsSmoke?"records-review":"ui-review");
+        const auto reviewDirectory=outputRoot3D()/"validation/ui"/(gridConfigSmoke?"grid-config-review":modelDisplaySmoke?"model-display-review":cflSmoke?"cfl-review":colorbarSmoke?"colorbar-review":boundarySmoke?"boundary-review":navigationSmoke?"navigation-review":acquisitionSmoke?"acquisition-review":layersSmoke?"layers-review":workspaceSmoke?"workspace-review":recordsSmoke?"records-review":"ui-review");
         if(uiSmoke)std::filesystem::create_directories(reviewDirectory);
         if(result==0&&workflowCapture&&!captureWorkflow3D(app,window)){std::cerr<<app.error<<'\n';result=14;}
         while(result==0 && !workflowCapture && !glfwWindowShouldClose(window)) {
@@ -1316,6 +1296,7 @@ int runWorkbench3D(int argc,char** argv) {
                 if(app.simulation->completed()){app.running=false;app.rememberPerformance();app.status="Simulation completed. Export the snapshot or receiver records.";}
             }
             ImGui_ImplOpenGL3_NewFrame();ImGui_ImplGlfw_NewFrame();
+            if(routeSmoke){if(frame==0)io.AddFocusEvent(true);if(frame==2){const auto at=app.homeRect.GetCenter();io.AddMousePosEvent(at.x,at.y);}if(frame==3)io.AddMouseButtonEvent(0,true);if(frame==4)io.AddMouseButtonEvent(0,false);}
             if(commandSmoke) {
                 if(frame==1){io.AddFocusEvent(true);io.AddKeyEvent(ImGuiKey_F1,true);}
                 if(frame==2)io.AddKeyEvent(ImGuiKey_F1,false);
@@ -1382,12 +1363,13 @@ int runWorkbench3D(int argc,char** argv) {
                 std::cout<<"GUI smoke: "<<(app.simulation->backendInfo().kind==BackendKind3D::Cuda?"CUDA":"CPU")<<" step "<<app.simulation->currentStep()<<" / "<<app.simulation->totalSteps()<<" | framebuffer "<<width<<'x'<<height<<" | traction-rate residual "<<app.simulation->diagnostics().maxTractionRateRelative<<'\n';
                 glfwSetWindowShouldClose(window,GLFW_TRUE);
             }
+            if(app.homeRequested){returnToHome=true;glfwSetWindowShouldClose(window,GLFW_TRUE);std::cout<<"3D Home route PASS\n";}
+            if(routeSmoke&&frame>8&&!returnToHome){std::cerr<<"3D Home button failed\n";result=15;glfwSetWindowShouldClose(window,GLFW_TRUE);}
             glfwSwapBuffers(window);if(frame==0&&!smoke)glfwShowWindow(window);++frame;
         }
-        if(!smoke)app.savePreferences();app.renderer.shutdown();
+        if(!smoke){app.savePreferences();SeisWave::Ui::setInterfaceFontSize(app.uiFontSize);}app.renderer.shutdown();
     }
-    ImGui_ImplOpenGL3_Shutdown();ImGui_ImplGlfw_Shutdown();ImPlot::DestroyContext();ImGui::DestroyContext();glfwDestroyWindow(window);glfwTerminate();return result;
+    return result?result:returnToHome?SeisWave::Ui::returnHome:0;
 }
 }
 
-int main(int argc,char** argv) {return Seis3D::Curvilinear::Ui::runWorkbench3D(argc,argv);}

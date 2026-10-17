@@ -1,0 +1,1499 @@
+#include "Workbench2D.hpp"
+#include "AppRuntime.hpp"
+#include "Presentation3D.hpp"
+#include "RecordPalettes3D.hpp"
+#include "RecordView.hpp"
+#include "SeisCommon/SegyIo.hpp"
+#ifdef _WIN32
+// clang-format off
+#include <windows.h>
+#include <commdlg.h>
+// clang-format on
+#endif
+#include "Seis2D/CurvilinearSolver2D.hpp"
+#include "Seis2D/ModelPresets2D.hpp"
+#include "imgui.h"
+#include "imgui_internal.h"
+#include "implot.h"
+#include <GLFW/glfw3.h>
+#include <algorithm>
+#include <chrono>
+#include <cmath>
+#include <cstdio>
+#include <fstream>
+#include <iostream>
+#include <numeric>
+namespace Seis2D::Curvilinear::Ui {
+using namespace Seis3D::Curvilinear::Ui;
+namespace {
+const char *l(const char *en, const char *zh) {
+    return language3D() ? zh : en;
+}
+std::string label(const char *en, const char *zh) {
+    return std::string(l(en, zh)) + "###2D" + en;
+}
+bool button(const char *en, const char *zh, FunctionRole3D role, ImVec2 size = {0, 0}) {
+    const auto text = label(en, zh);
+    return functionButton3D(text.c_str(), role, size);
+}
+ImU32 paletteColor(double t, int palette) {
+    const auto &stops = Seis3D::Curvilinear::RecordPalettes::wavePalette(palette);
+    const double x = std::clamp(t, 0.0, 1.0) * 4;
+    const int i = std::min(3, static_cast<int>(x));
+    const float f = static_cast<float>(x - i);
+    return ImGui::ColorConvertFloat4ToU32({stops[i][0] * (1 - f) + stops[i + 1][0] * f,
+                                           stops[i][1] * (1 - f) + stops[i + 1][1] * f,
+                                           stops[i][2] * (1 - f) + stops[i + 1][2] * f, 1});
+}
+void quad(ImDrawList *draw, const ImVec2 *points, const ImU32 *colors) {
+    draw->PrimReserve(6, 4);
+    const auto base = static_cast<ImDrawIdx>(draw->_VtxCurrentIdx);
+    for (int i : {0, 1, 2, 0, 2, 3})
+        draw->PrimWriteIdx(static_cast<ImDrawIdx>(base + i));
+    for (int i = 0; i < 4; ++i)
+        draw->PrimWriteVtx(points[i], ImGui::GetFontTexUvWhitePixel(), colors[i]);
+}
+void fitAcquisition(Parameters &p) {
+    p.sourceX = p.sourceX < 0 ? -1 : std::clamp(p.sourceX, 2, std::max(2, p.nx - 3));
+    p.sourceZ = std::clamp(p.sourceZ, 2, std::max(2, p.nz - 3));
+    p.receiverStart = std::clamp(p.receiverStart, 0, std::max(0, p.nx - 1));
+    p.receiverDepth = std::clamp(p.receiverDepth, 0, std::max(0, p.nz - 1));
+    p.receiverStride = std::max(1, p.receiverStride);
+    p.receiverCount =
+        std::max(1, std::min({p.receiverCount, 1024, 1 + (p.nx - 1 - p.receiverStart) / p.receiverStride}));
+}
+struct Workbench {
+    Simulation simulation;
+    Parameters staged;
+    ComputeSettings3D settings, activeSettings;
+    int selectedBackend{}, category{}, component{}, wavePalette{1}, modelPalette{12}, modelComponent{},
+        selectedReceiver{};
+    bool running{}, home{}, help{}, fit{true}, grid{}, sponge{}, normalized{true}, showWave{true},
+        showModel{true};
+    float gain{1};
+    std::string error, status;
+    std::vector<float> frame;
+    std::vector<double> terrainPreviewX, terrainPreviewZ;
+    std::array<char, 2048> vts{}, csv{}, segy{}, importPath{}, surfacePath{};
+    std::vector<Layer> layerDraft;
+    bool openLayers{}, openTerrain{}, zeroSurfaceX{true};
+    int layerPreset{-1};
+    std::string layerError;
+    ImRect layerEditRect, layerUseRect, terrainDoneRect;
+    int renderStrideX{1}, renderStrideZ{1};
+    ImVec2 dialogViewport{};
+    SeisWave::Ui::RecordView recordView;
+    SeisWave::ImportedRecords imported;
+    bool useImported{}, ieee64{};
+    std::array<bool, 3> exportComponents{true, false, false};
+    std::uint64_t recordGeneration{1}, importedRevision{1};
+    ImRect rebuildRect, frequencyRect;
+    int lastHeight{};
+    Seis3D::Curvilinear::CudaDeviceInventory3D inventory;
+    ImRect homeRect;
+    bool layout{true}, domainVisible{};
+    int lastWidth{};
+    float recordHeight{};
+    bool parameterWindow{true}, waveWindow{true}, recordWindow{true};
+    Workbench() {
+        inventory = Seis3D::Curvilinear::queryCudaDevices3D();
+        selectedBackend = Seis3D::Curvilinear::selectCudaDevice3D(inventory).available ? 1 : 0;
+        const auto output = SeisWave::Ui::outputRoot() / "2d";
+        std::filesystem::create_directories(output);
+        std::snprintf(vts.data(), vts.size(), "%s", (output / "wavefield.vts").string().c_str());
+        std::snprintf(csv.data(), csv.size(), "%s", (output / "receivers.csv").string().c_str());
+        std::snprintf(segy.data(), segy.size(), "%s", (output / "receivers.sgy").string().c_str());
+    }
+    bool apply() {
+        if (!simulation.initialize(staged, error, static_cast<BackendKind3D>(selectedBackend), settings))
+            return false;
+        activeSettings = settings;
+        ++recordGeneration;
+        recordView.invalidate();
+        useImported = false;
+        running = false;
+        fit = true;
+        selectedReceiver =
+            std::clamp(selectedReceiver, 0, static_cast<int>(simulation.receivers().size()) - 1);
+        status = l("Fresh 2D session initialized.", "二维会话已从零时刻重建。");
+        return true;
+    }
+    bool dirty() const {
+        return staged != simulation.parameters() || settings != activeSettings ||
+               selectedBackend != static_cast<int>(simulation.backend().kind);
+    }
+    SeisWave::RecordDataView liveRecords() const {
+        SeisWave::RecordDataView data;
+        data.dt = simulation.dt();
+        data.revision = (recordGeneration << 32) + simulation.step() + 1;
+        data.components = {"Vz", "Vx"};
+        const auto &p = simulation.parameters();
+        const auto source = simulation.grid().coordinates[simulation.grid().index(
+            (p.sourceX < 0 ? p.nx / 2 : p.sourceX) + ghost, p.sourceZ + ghost)];
+        for (const auto &receiver : simulation.receivers()) {
+            SeisWave::TraceView t;
+            t.position = {receiver.position[0], 0, receiver.position[1]};
+            t.source = {source[0], 0, source[1]};
+            t.channels[0] = receiver.vz;
+            t.channels[1] = receiver.vx;
+            data.traces.push_back(t);
+        }
+        return data;
+    }
+    SeisWave::RecordDataView displayedRecords() const {
+        return useImported ? imported.view((1ULL << 63) + importedRevision) : liveRecords();
+    }
+    bool prepareRun(bool continuous) {
+        if (dirty()) {
+            if (!apply()) {
+                running = false;
+                return false;
+            }
+        } else if (simulation.completed()) {
+            if (!simulation.reset(error))
+                return false;
+            ++recordGeneration;
+            recordView.invalidate();
+        }
+        useImported = false;
+        running = continuous;
+        return true;
+    }
+    void clear() {
+        running = false;
+        if (simulation.reset(error)) {
+            ++recordGeneration;
+            recordView.invalidate();
+        }
+    }
+    void importSegy() {
+        if (SeisWave::readSegy(
+                std::filesystem::path(std::u8string(reinterpret_cast<const char8_t *>(importPath.data()))),
+                imported, error)) {
+            useImported = true;
+            ++importedRevision;
+            recordView.invalidate();
+            selectedReceiver = 0;
+            recordWindow = true;
+            status = l("SEG-Y loaded; simulation unchanged.", "SEG-Y 已载入，当前模拟保持不变。");
+        }
+    }
+    void exportSegy() {
+        const auto data = displayedRecords();
+        int selected = 0;
+        for (std::size_t c = 0; c < data.components.size(); ++c)
+            selected += exportComponents[c];
+        if (!selected) {
+            error = l("Select at least one export component.", "请至少选择一个导出分量。");
+            return;
+        }
+        auto path = std::filesystem::path(std::u8string(reinterpret_cast<const char8_t *>(segy.data())));
+        if (path.extension().empty())
+            path += ".sgy";
+        for (std::size_t c = 0; c < data.components.size(); ++c)
+            if (exportComponents[c]) {
+                auto target = path;
+                if (selected > 1)
+                    target = path.parent_path() / (path.stem().native() +
+                                                   std::filesystem::path("_" + data.components[c]).native() +
+                                                   path.extension().native());
+                if (!SeisWave::writeSegy(data, static_cast<int>(c), target, error, ieee64))
+                    return;
+            }
+        status =
+            l("Raw SEG-Y exported; components use separate files.", "原始 SEG-Y 已导出，多分量分别保存。");
+    }
+    void browse(std::array<char, 2048> &path, bool save, bool terrain = false) {
+#ifdef _WIN32
+        std::array<wchar_t, 32768> name{};
+        OPENFILENAMEW dialog{};
+        dialog.lStructSize = sizeof(dialog);
+        dialog.lpstrFile = name.data();
+        dialog.nMaxFile = static_cast<DWORD>(name.size());
+        dialog.lpstrFilter = terrain ? L"Surface profile (*.csv;*.txt)\0*.csv;*.txt\0All files\0*.*\0"
+                                     : L"SEG-Y (*.sgy;*.segy)\0*.sgy;*.segy\0All files\0*.*\0";
+        dialog.lpstrDefExt = terrain ? L"csv" : L"sgy";
+        dialog.Flags = OFN_EXPLORER | OFN_PATHMUSTEXIST | (save ? OFN_OVERWRITEPROMPT : OFN_FILEMUSTEXIST);
+        if (save ? GetSaveFileNameW(&dialog) : GetOpenFileNameW(&dialog)) {
+            const auto utf8 = std::filesystem::path(name.data()).u8string();
+            if (utf8.size() >= path.size()) {
+                error = "Selected path is too long.";
+                return;
+            }
+            std::snprintf(path.data(), path.size(), "%s", reinterpret_cast<const char *>(utf8.c_str()));
+        }
+#else
+        (void)path;
+        (void)save;
+        (void)terrain;
+#endif
+    }
+    void toolbar() {
+        if (ImGui::BeginMainMenuBar()) {
+            if (button("Home", "主页", FunctionRole3D::Model))
+                home = true;
+            homeRect = {ImGui::GetItemRectMin(), ImGui::GetItemRectMax()};
+            if (ImGui::BeginMenu(l("Workspace", "工作区"))) {
+                ImGui::MenuItem(l("Parameters", "参数面板"), nullptr, &parameterWindow);
+                ImGui::MenuItem(l("Wavefield", "波场窗口"), nullptr, &waveWindow);
+                ImGui::MenuItem(l("Receivers", "接收记录"), nullptr, &recordWindow);
+                if (ImGui::MenuItem(l("Restore layout [F]", "恢复布局 [F]")))
+                    parameterWindow = waveWindow = recordWindow = layout = true;
+                ImGui::EndMenu();
+            }
+            if (ImGui::BeginMenu(l("Appearance", "界面外观"))) {
+                int language = language3D();
+                ImGui::SetNextItemWidth(190);
+                if (ImGui::Combo("##language2D", &language, "English\0简体中文\0"))
+                    setLanguage3D(language);
+                ImGui::SetNextItemWidth(230);
+                if (ImGui::BeginCombo("##theme2D", themeName3D(themeIndex3D()))) {
+                    for (int i = 0; i < themeCount3D; ++i)
+                        if (ImGui::Selectable(themeName3D(i), themeIndex3D() == i))
+                            applyTheme3D(i);
+                    ImGui::EndCombo();
+                }
+                float font = SeisWave::Ui::interfaceFontSize();
+                ImGui::SetNextItemWidth(230);
+                if (ImGui::SliderFloat(l("Font size (px)", "字体大小（px）"), &font, 16, 28, "%.0f")) {
+                    SeisWave::Ui::setInterfaceFontSize(font);
+                    layout = true;
+                }
+                ImGui::EndMenu();
+            }
+            if (button("Help [F1]", "帮助 [F1]", FunctionRole3D::Display))
+                help = !help;
+            ImGui::EndMainMenuBar();
+        }
+        const auto *vp = ImGui::GetMainViewport();
+        const float height = ImGui::GetFontSize() * (vp->WorkSize.x < 1250 ? 2 : 1) + 18;
+        ImGui::SetNextWindowPos(vp->WorkPos);
+        ImGui::SetNextWindowSize({vp->WorkSize.x, height});
+        ImGui::Begin("##2DCommands", nullptr,
+                     ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoDocking | ImGuiWindowFlags_NoMove |
+                         ImGuiWindowFlags_NoSavedSettings);
+        if (button(running ? "Pause [Space]" : "Run [Space]", running ? "暂停 [Space]" : "运行 [Space]",
+                   FunctionRole3D::Run)) {
+            if (running)
+                running = false;
+            else
+                prepareRun(true);
+        }
+        ImGui::SameLine();
+        if (button("Step [N]", "单步 [N]", FunctionRole3D::Run) && prepareRun(false))
+            simulation.advance(1, error);
+        ImGui::SameLine();
+        if (button("Clear [C]", "清空 [C]", FunctionRole3D::Danger))
+            clear();
+        ImGui::SameLine();
+        if (button("Fit [R]", "适配 [R]", FunctionRole3D::Display))
+            fit = true;
+        if (ImGui::GetContentRegionAvail().x < 350)
+            ImGui::NewLine();
+        else
+            ImGui::SameLine();
+        ImGui::Text("t %.4f s | %d / %d | dt %.5f ms", simulation.step() * simulation.dt(), simulation.step(),
+                    simulation.totalSteps(), simulation.dt() * 1000);
+        ImGui::End();
+        const ImVec2 pos{vp->WorkPos.x, vp->WorkPos.y + height};
+        ImGui::SetNextWindowPos(pos);
+        ImGui::SetNextWindowSize({vp->WorkSize.x, vp->WorkSize.y - height});
+        ImGui::Begin("##2DDockHost", nullptr,
+                     ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoDocking |
+                         ImGuiWindowFlags_NoSavedSettings);
+        const auto id = ImGui::GetID("2DDock");
+        ImGui::DockSpace(id, {0, 0});
+        if (layout || lastWidth != static_cast<int>(vp->Size.x) ||
+            lastHeight != static_cast<int>(vp->Size.y)) {
+            fit = true;
+            ImGui::DockBuilderRemoveNode(id);
+            ImGui::DockBuilderAddNode(id, ImGuiDockNodeFlags_DockSpace);
+            ImGui::DockBuilderSetNodeSize(id, {vp->WorkSize.x - 24, vp->WorkSize.y - height - 20});
+            ImGuiID main = id, left{}, records{};
+            ImGui::DockBuilderSplitNode(main, ImGuiDir_Left,
+                                        std::clamp(ImGui::GetFontSize() * 19.f / vp->Size.x, .24f, .43f),
+                                        &left, &main);
+            const float recordRatio =
+                std::clamp((ImGui::GetFontSize() * 7 + 110) / vp->WorkSize.y, .31f, .50f);
+            ImGui::DockBuilderSplitNode(main, ImGuiDir_Down, recordRatio, &records, &main);
+            ImGui::DockBuilderDockWindow(label("Parameters and run", "参数与运行").c_str(), left);
+            ImGui::DockBuilderDockWindow(label("Curved X-Z wavefield", "曲面 X–Z 波场").c_str(), main);
+            ImGui::DockBuilderDockWindow(label("Receiver records", "接收记录").c_str(), records);
+            ImGui::DockBuilderFinish(id);
+            layout = false;
+            lastWidth = static_cast<int>(vp->Size.x);
+            lastHeight = static_cast<int>(vp->Size.y);
+        }
+        ImGui::End();
+    }
+    void updateTerrainPreview() {
+        terrainPreviewX.clear();
+        terrainPreviewZ.clear();
+        if (staged.surfaceSamples.empty())
+            return;
+        const SurfaceProfile curve(staged.surfaceSamples);
+        for (int i = 0; i <= 512; ++i) {
+            const double x =
+                staged.surfaceSamples.front()[0] +
+                (staged.surfaceSamples.back()[0] - staged.surfaceSamples.front()[0]) * (i / 512.);
+            terrainPreviewX.push_back(x);
+            terrainPreviewZ.push_back(curve.sample(x)[0]);
+        }
+    }
+    bool loadTerrain() {
+        SurfaceSamples samples;
+        if (!readSurfaceProfile(
+                std::filesystem::path(std::u8string(reinterpret_cast<const char8_t *>(surfacePath.data()))),
+                samples, error))
+            return false;
+        const double origin = zeroSurfaceX ? samples.front()[0] : 0;
+        double sum = 0;
+        for (auto &point : samples) {
+            point[0] -= origin;
+            sum += point[1];
+        }
+        const double datum = sum / static_cast<double>(samples.size());
+        if (!std::isfinite(datum)) {
+            error = "Nonfinite elevation datum.";
+            return false;
+        }
+        staged.surfaceSamples = std::move(samples);
+        staged.surfaceDatum = datum;
+        staged.importedSurface = true;
+        updateTerrainPreview();
+        status = l("Profile loaded; review span and datum, then reset / apply.",
+                   "高程剖面已载入；检查覆盖范围和高程基准后，重置并应用。");
+        return true;
+    }
+    void modelDialogs() {
+        const char *layersTitle =
+            l("Layered material editor###2DLayerEditor", "分层介质编辑###2DLayerEditor");
+        if (openLayers) {
+            layerDraft = staged.layers;
+            layerError.clear();
+            layerPreset = -1;
+            ImGui::OpenPopup(layersTitle);
+            openLayers = false;
+        }
+        const auto *vp = ImGui::GetMainViewport();
+        const bool resized = dialogViewport.x != vp->Size.x || dialogViewport.y != vp->Size.y;
+        dialogViewport = vp->Size;
+        ImGui::SetNextWindowPos(vp->GetCenter(), resized ? ImGuiCond_Always : ImGuiCond_Appearing,
+                                {.5f, .5f});
+        ImGui::SetNextWindowSize({std::min(vp->Size.x - 40, 1020.f), std::min(vp->Size.y - 70, 660.f)},
+                                 ImGuiCond_Always);
+        if (ImGui::BeginPopupModal(layersTitle, nullptr, ImGuiWindowFlags_NoSavedSettings)) {
+            ImGui::SetNextItemWidth(-1);
+            const auto &presets = materialPresets();
+            if (ImGui::BeginCombo("##layerPreset",
+                                  layerPreset < 0 ? l("Choose a material preset", "选择介质预设")
+                                                  : l(presets[layerPreset].en, presets[layerPreset].zh))) {
+                for (int i = 0; i < static_cast<int>(presets.size()); ++i)
+                    if (ImGui::Selectable(l(presets[i].en, presets[i].zh), i == layerPreset)) {
+                        layerPreset = i;
+                        layerDraft = presets[i].layers;
+                    }
+                ImGui::EndCombo();
+            }
+            ImGui::TextWrapped(
+                "%s", l("Thickness uses computational depth. The final layer fills all remaining depth.",
+                        "厚度按计算深度定义，末层自动填充剩余深度；相同深度索引保持相同物性。"));
+            const float tableHeight =
+                std::max(100.f, ImGui::GetContentRegionAvail().y - ImGui::GetFontSize() * 6 - 48);
+            if (ImGui::BeginTable("##layerTable", 5,
+                                  ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY |
+                                      ImGuiTableFlags_SizingStretchSame,
+                                  {0, tableHeight})) {
+                for (const char *name : {l("Layer", "地层"), l("Thickness (m)", "厚度（m）"), "Vp (m/s)",
+                                         "Vs (m/s)", l("Density (kg/m3)", "密度（kg/m³）")})
+                    ImGui::TableSetupColumn(name);
+                ImGui::TableSetupScrollFreeze(0, 1);
+                ImGui::TableHeadersRow();
+                for (std::size_t i = 0; i < layerDraft.size(); ++i) {
+                    ImGui::PushID(static_cast<int>(i));
+                    auto &v = layerDraft[i];
+                    ImGui::TableNextRow();
+                    ImGui::TableNextColumn();
+                    ImGui::Text("%zu", i + 1);
+                    for (int c = 0; c < 4; ++c) {
+                        ImGui::TableNextColumn();
+                        ImGui::SetNextItemWidth(-1);
+                        if (c == 0 && i + 1 == layerDraft.size())
+                            ImGui::TextUnformatted(l("Auto", "自动"));
+                        else {
+                            double *value = c == 0   ? &v.thickness
+                                            : c == 1 ? &v.vp
+                                            : c == 2 ? &v.vs
+                                                     : &v.density;
+                            ImGui::PushID(c);
+                            ImGui::InputDouble("##value", value, 0, 0, "%.2f");
+                            ImGui::PopID();
+                        }
+                    }
+                    ImGui::PopID();
+                }
+                ImGui::EndTable();
+            }
+            ImGui::BeginDisabled(layerDraft.size() >= 16);
+            if (button("Add layer", "增加地层", FunctionRole3D::Model)) {
+                if (!layerDraft.empty())
+                    layerDraft.back().thickness = 20;
+                layerDraft.push_back({0, 4000, 2300, 2650});
+            }
+            ImGui::EndDisabled();
+            ImGui::SameLine();
+            ImGui::BeginDisabled(layerDraft.size() <= 1);
+            if (button("Remove last", "删除末层", FunctionRole3D::Display)) {
+                layerDraft.pop_back();
+                layerDraft.back().thickness = 0;
+            }
+            ImGui::EndDisabled();
+            double vs = 1e100;
+            for (const auto &v : layerDraft)
+                vs = std::min(vs, v.vs);
+            ImGui::TextWrapped("%s %.2f | h <= %.3f m (8 PPW, 2.5 f0)", l("Minimum Vs", "最低 Vs"), vs,
+                               vs / (20 * std::max(1.0, staged.frequency)));
+            if (!layerError.empty())
+                ImGui::TextWrapped("%s", layerError.c_str());
+            if (button("Use layers", "采用层表", FunctionRole3D::Run)) {
+                bool valid = !layerDraft.empty();
+                for (std::size_t i = 0; i < layerDraft.size(); ++i) {
+                    const auto &v = layerDraft[i];
+                    valid &= std::isfinite(v.thickness) && std::isfinite(v.vp) && std::isfinite(v.vs) &&
+                             std::isfinite(v.density) && v.vs > 0 && v.vp > 0 && v.density > 0 &&
+                             std::isfinite(v.density * v.vp * v.vp) && v.vp * v.vp > 4 * v.vs * v.vs / 3 &&
+                             (i + 1 == layerDraft.size() || v.thickness > 0);
+                }
+                if (valid) {
+                    layerDraft.back().thickness = 0;
+                    staged.layers = layerDraft;
+                    staged.layered = true;
+                    ImGui::CloseCurrentPopup();
+                } else
+                    layerError = l("Require finite positive material values, positive bulk modulus and "
+                                   "positive finite-layer thickness.",
+                                   "物性必须为有限正值、体积模量必须为正，非末层厚度必须大于零。");
+            }
+            layerUseRect = {ImGui::GetItemRectMin(), ImGui::GetItemRectMax()};
+            ImGui::SameLine();
+            if (button("Cancel layers", "取消", FunctionRole3D::Display))
+                ImGui::CloseCurrentPopup();
+            ImGui::EndPopup();
+        }
+        const char *terrainTitle = l("External surface profile###2DTerrain", "外部地表高程###2DTerrain");
+        if (openTerrain) {
+            updateTerrainPreview();
+            ImGui::OpenPopup(terrainTitle);
+            openTerrain = false;
+        }
+        ImGui::SetNextWindowPos(vp->GetCenter(), resized ? ImGuiCond_Always : ImGuiCond_Appearing,
+                                {.5f, .5f});
+        ImGui::SetNextWindowSize({std::min(vp->Size.x - 40, 1020.f), std::min(vp->Size.y - 70, 800.f)},
+                                 ImGuiCond_Always);
+        if (ImGui::BeginPopupModal(terrainTitle, nullptr, ImGuiWindowFlags_NoSavedSettings)) {
+            ImGui::BeginChild("##terrainFields", {0, -ImGui::GetFrameHeightWithSpacing() - 12},
+                              ImGuiChildFlags_None, ImGuiWindowFlags_AlwaysVerticalScrollbar);
+            ImGui::TextWrapped("%s", l("CSV/TXT: x_m, elevation_m (positive up), optional header. "
+                                       "Coordinates must increase strictly. PCHIP interpolation is used.",
+                                       "CSV/TXT 两列：x_m, elevation_m（高程向上为正），可有表头；X "
+                                       "必须严格递增。采用保形三次 Hermite 插值。"));
+            ImGui::SetNextItemWidth(-1);
+            ImGui::InputText("##surfacePath", surfacePath.data(), surfacePath.size());
+            if (button("Browse terrain", "选择高程文件", FunctionRole3D::Model))
+                browse(surfacePath, false, true);
+            ImGui::SameLine();
+            if (button("Load terrain", "载入高程", FunctionRole3D::Model))
+                loadTerrain();
+            ImGui::Checkbox(l("Shift first X to zero on import", "导入时将首点 X 平移至零"), &zeroSurfaceX);
+            if (!staged.surfaceSamples.empty()) {
+                ImGui::Checkbox(l("Use imported surface", "使用外部高程"), &staged.importedSurface);
+                ImGui::TextUnformatted(l("Elevation datum (m)", "高程基准（m）"));
+                ImGui::SetNextItemWidth(-1);
+                ImGui::InputDouble("##elevationDatum", &staged.surfaceDatum, 1, 10, "%.3f");
+                const auto &v = staged.surfaceSamples;
+                ImGui::TextWrapped("%zu %s | X %.3f .. %.3f m | %s %.3f m", v.size(), l("samples", "个样点"),
+                                   v.front()[0], v.back()[0], l("required span", "所需覆盖"),
+                                   (staged.nx - 1) * staged.spacing);
+                ImGui::TextWrapped("%s", l("Initial datum is mean elevation. Model depth z = datum - "
+                                           "elevation. Reset / apply rebuilds geometry, normals and dt.",
+                                           "初始基准为样点高程平均值，模型深度 "
+                                           "z=基准−高程。重置并应用会重新生成网格、法向和 dt。"));
+                const auto &x = terrainPreviewX, &z = terrainPreviewZ;
+                if (ImPlot::BeginPlot("##surfacePreview",
+                                      {-1, std::max(180.f, ImGui::GetContentRegionAvail().y - 12)},
+                                      ImPlotFlags_NoLegend)) {
+                    ImPlot::SetupAxes("X (m)", l("Elevation (m)", "高程（m）"));
+                    ImPlot::SetupAxisTicks(ImAxis_Y1, *std::min_element(z.begin(), z.end()) - 1,
+                                           *std::max_element(z.begin(), z.end()) + 1, 3);
+                    ImPlot::SetupAxesLimits(v.front()[0], v.back()[0],
+                                            *std::min_element(z.begin(), z.end()) - 1,
+                                            *std::max_element(z.begin(), z.end()) + 1, ImGuiCond_Always);
+                    ImPlot::PlotLine("Profile", x.data(), z.data(), static_cast<int>(x.size()));
+                    ImPlot::EndPlot();
+                }
+            }
+            if (!error.empty())
+                ImGui::TextWrapped("%s", error.c_str());
+            ImGui::EndChild();
+            if (button("Done terrain", "完成", FunctionRole3D::Run))
+                ImGui::CloseCurrentPopup();
+            terrainDoneRect = {ImGui::GetItemRectMin(), ImGui::GetItemRectMax()};
+            ImGui::EndPopup();
+        }
+    }
+    void controls() {
+        if (!parameterWindow)
+            return;
+        if (!ImGui::Begin(label("Parameters and run", "参数与运行").c_str(), &parameterWindow)) {
+            ImGui::End();
+            return;
+        }
+        const char *en[]{"Model", "Survey", "Run", "Display", "Export"};
+        const char *zh[]{"建模", "采集", "运行", "显示", "导出"};
+        const float width =
+            std::max(22.f, (ImGui::GetContentRegionAvail().x - 4 * ImGui::GetStyle().ItemSpacing.x) / 5);
+        float longest = 1;
+        for (int i = 0; i < 5; ++i)
+            longest = std::max(longest, ImGui::CalcTextSize(l(en[i], zh[i])).x);
+        ImGui::PushFont(nullptr, std::clamp(ImGui::GetFontSize() *
+                                                (width - 2 * ImGui::GetStyle().FramePadding.x - 4) / longest,
+                                            12.f, ImGui::GetFontSize()));
+        for (int i = 0; i < 5; ++i) {
+            if (i)
+                ImGui::SameLine();
+            if (button(en[i], zh[i],
+                       i == 2   ? FunctionRole3D::Run
+                       : i == 4 ? FunctionRole3D::Export
+                                : FunctionRole3D::Model,
+                       {width, 0}))
+                category = i;
+        }
+        ImGui::PopFont();
+        const float footer = ImGui::GetFontSize() * 8 + 82;
+        ImGui::BeginChild("##2DParameterFields", {0, -footer}, ImGuiChildFlags_None,
+                          ImGuiWindowFlags_AlwaysVerticalScrollbar);
+        const auto input = [&](const char *name, const char *chinese, double &value, double increment = 1) {
+            ImGui::TextUnformatted(l(name, chinese));
+            ImGui::SetNextItemWidth(-1);
+            const auto id = std::string("##") + name;
+            ImGui::InputDouble(id.c_str(), &value, increment, increment * 10, "%.3f");
+            if (std::string(name) == "Dominant frequency (Hz)")
+                frequencyRect = {ImGui::GetItemRectMin(), ImGui::GetItemRectMax()};
+        };
+        const auto integer = [&](const char *en, const char *zh, int &value, int step = 1, int fast = 100) {
+            ImGui::TextUnformatted(l(en, zh));
+            ImGui::SetNextItemWidth(-1);
+            const auto id = std::string("##int") + en;
+            ImGui::InputInt(id.c_str(), &value, step, fast);
+        };
+        if (category == 0) {
+            if (ImGui::CollapsingHeader(l("Curved grid", "曲网格与尺寸"), ImGuiTreeNodeFlags_DefaultOpen)) {
+
+                ImGui::TextUnformatted(l("Geometry presets (X x Z)", "几何预设（X × Z）"));
+                ImGui::SetNextItemWidth(-1);
+                int preset = -1;
+                const int sizes[7][2]{{200, 200},   {400, 200},   {600, 300},  {1000, 1000},
+                                      {2000, 1000}, {2000, 2000}, {4000, 2000}};
+                for (int i = 0; i < 7; ++i)
+                    if (staged.nx == sizes[i][0] && staged.nz == sizes[i][1])
+                        preset = i;
+                const char *names[]{"200 x 200",   "400 x 200",   "600 x 300",  "1000 x 1000",
+                                    "2000 x 1000", "2000 x 2000", "4000 x 2000"};
+                if (ImGui::BeginCombo("##2Dpreset", preset < 0 ? l("Custom", "自定义") : names[preset])) {
+                    for (int i = 0; i < 7; ++i)
+                        if (ImGui::Selectable(names[i], preset == i)) {
+                            staged.nx = sizes[i][0];
+                            staged.nz = sizes[i][1];
+                            fitAcquisition(staged);
+                        }
+                    ImGui::EndCombo();
+                }
+                int dims[]{staged.nx, staged.nz};
+                ImGui::TextUnformatted(l("Physical nodes X / Z (8..16384)", "物理节点 X / Z（8..16384）"));
+                ImGui::SetNextItemWidth(-1);
+                if (ImGui::InputInt2("##2Ddims", dims)) {
+                    staged.nx = dims[0];
+                    staged.nz = dims[1];
+                    if (staged.nx >= 8 && staged.nz >= 8 && staged.nx <= maxAxisNodes &&
+                        staged.nz <= maxAxisNodes)
+                        fitAcquisition(staged);
+                }
+                input("Spacing (m)", "网格间距（m）", staged.spacing, .5);
+                ImGui::TextWrapped("%s: %.2f x %.2f m", l("Staged span", "待应用尺寸"),
+                                   (staged.nx - 1) * staged.spacing, (staged.nz - 1) * staged.spacing);
+                const double nodes = (static_cast<double>(std::max(0, staged.nx)) + 6) *
+                                     (static_cast<double>(std::max(0, staged.nz)) + 6);
+                ImGui::TextWrapped("%s %.0f MiB | GPU %.0f MiB", l("Grid estimate: RAM", "网格预算：内存"),
+                                   nodes * 480 / (1024 * 1024), nodes * 384 / (1024 * 1024));
+                ImGui::TextWrapped("%s", l("Limits also depend on available RAM/VRAM; rebuilding keeps the "
+                                           "old session until success.",
+                                           "实际容量取决于可用内存/显存，重建成功前保留原会话。"));
+                if (button("External elevation profile", "外部地表高程…", FunctionRole3D::Model, {-1, 0}))
+                    openTerrain = true;
+                if (!staged.surfaceSamples.empty())
+                    ImGui::Checkbox(l("Imported surface enabled", "启用外部高程"), &staged.importedSurface);
+                ImGui::BeginDisabled(staged.importedSurface);
+                input("Relief amplitude (m)", "地表起伏振幅（m）", staged.relief);
+                input("Terrain wavelength (m)", "地形波长（m）", staged.wavelength, 10);
+                ImGui::EndDisabled();
+                input("Flatten depth (0=auto)", "展平深度（0=自动）", staged.flattenDepth, 10);
+                if (button("Flat", "平地", FunctionRole3D::Model)) {
+                    staged.importedSurface = false;
+                    staged.relief = 0;
+                }
+                ImGui::SameLine();
+                if (button("Curved", "曲面", FunctionRole3D::Model)) {
+                    staged.importedSurface = false;
+                    staged.relief = 10;
+                    staged.flattenDepth = 0;
+                }
+            }
+            if (ImGui::CollapsingHeader(l("Elastic material", "弹性介质"), 0)) {
+
+                ImGui::Checkbox(l("Layered material", "分层介质"), &staged.layered);
+                if (!staged.layered) {
+                    input("Vp (m/s)", "Vp（m/s）", staged.vp, 100);
+                    input("Vs (m/s)", "Vs（m/s）", staged.vs, 100);
+                    input("Density (kg/m3)", "密度（kg/m³）", staged.density, 50);
+                    if (button("Material presets / layers", "介质预设与层表…", FunctionRole3D::Model,
+                               {-1, 0}))
+                        openLayers = true;
+                } else {
+                    ImGui::TextWrapped(
+                        "%s", l("Layers follow computational depth; final layer fills the remainder.",
+                                "地层按计算深度对齐；末层填充剩余深度。"));
+                    double vs = 1e100;
+                    for (const auto &v : staged.layers)
+                        vs = std::min(vs, v.vs);
+                    ImGui::Text("%zu %s | Vs min %.0f m/s", staged.layers.size(), l("layers", "层"), vs);
+                    if (button("Edit layers / presets", "编辑层表与预设…", FunctionRole3D::Model, {-1, 0}))
+                        openLayers = true;
+                    layerEditRect = {ImGui::GetItemRectMin(), ImGui::GetItemRectMax()};
+                }
+            }
+        } else if (category == 1) {
+            if (ImGui::CollapsingHeader(l("Source / dominant frequency", "震源与激发主频"),
+                                        ImGuiTreeNodeFlags_DefaultOpen)) {
+
+                ImGui::TextUnformatted(l("Source index X / Z (-1 centers X)", "震源索引 X / Z（X=-1 居中）"));
+                int source[]{staged.sourceX, staged.sourceZ};
+                ImGui::SetNextItemWidth(-1);
+                if (ImGui::InputInt2("##source2D", source)) {
+                    staged.sourceX = source[0];
+                    staged.sourceZ = source[1];
+                }
+                input("Dominant frequency (Hz)", "激发主频（Hz）", staged.frequency);
+                input("Force per Y length (N/m)", "单位 Y 长度力幅值（N/m）", staged.forcePerLength, 10000);
+            }
+            if (ImGui::CollapsingHeader(l("Receiver line", "接收测线"), 0)) {
+
+                integer("Start X", "起点 X", staged.receiverStart);
+                integer("Count (max 1024)", "接收数（最多 1024）", staged.receiverCount);
+                integer("Index stride", "节点间隔", staged.receiverStride);
+                integer("Depth index", "深度索引", staged.receiverDepth);
+                if (button("Fit source / receivers", "适配震源/接收位置", FunctionRole3D::Model, {-1, 0}))
+                    fitAcquisition(staged);
+                ImGui::TextWrapped("%s", l("Each accepted step samples Vx and Vz; time zero is included.",
+                                           "每个有效步采样 Vx、Vz，记录包含零时刻。"));
+            }
+        } else if (category == 2) {
+            if (ImGui::CollapsingHeader(l("Compute backend", "计算核心"), ImGuiTreeNodeFlags_DefaultOpen)) {
+
+                ImGui::SetNextItemWidth(-1);
+                const auto availability = Seis3D::Curvilinear::selectCudaDevice3D(inventory);
+                if (ImGui::BeginCombo("##2Dbackend",
+                                      selectedBackend ? "CUDA Float64" : "CPU / OpenMP Float64")) {
+                    if (ImGui::Selectable("CPU / OpenMP Float64", selectedBackend == 0))
+                        selectedBackend = 0;
+                    ImGui::BeginDisabled(!availability.available);
+                    if (ImGui::Selectable("CUDA Float64", selectedBackend == 1))
+                        selectedBackend = 1;
+                    ImGui::EndDisabled();
+                    ImGui::EndCombo();
+                }
+                const auto selected = Seis3D::Curvilinear::selectCudaDevice3D(inventory, settings.cudaDevice);
+                ImGui::SetNextItemWidth(-1);
+                if (ImGui::BeginCombo("##2Ddevice", settings.cudaDevice < 0 ? l("Auto (largest usable VRAM)",
+                                                                                "自动（可用总显存最大）")
+                                                                            : selected.description.c_str())) {
+                    if (ImGui::Selectable(l("Auto", "自动"), settings.cudaDevice < 0))
+                        settings.cudaDevice = -1;
+                    for (const auto &device : inventory.devices) {
+                        ImGui::BeginDisabled(!device.available);
+                        const auto name = "GPU " + std::to_string(device.index) + " | " + device.name;
+                        if (ImGui::Selectable(name.c_str(), settings.cudaDevice == device.index))
+                            settings.cudaDevice = device.index;
+                        ImGui::EndDisabled();
+                    }
+                    ImGui::EndCombo();
+                }
+                if (button("Refresh devices", "重新检测显卡", FunctionRole3D::Model))
+                    inventory = Seis3D::Curvilinear::queryCudaDevices3D();
+                ImGui::TextWrapped("%s", selected.description.c_str());
+                integer("CPU workers (0=auto)", "CPU 线程（0=自动）", settings.cpuThreads);
+            }
+            if (ImGui::CollapsingHeader(l("Time / absorption", "时间与吸收层"), 0)) {
+                input("Duration (s)", "模拟时长（s）", staged.duration, .1);
+                integer("Maximum steps (0=duration)", "最大步数（0=按时长）", staged.maxSteps, 100, 1000);
+                input("DRP CFL (0.02..0.8)", "DRP CFL（0.02..0.8）", staged.cfl, .02);
+                ImGui::Checkbox(l("Enable sponge", "启用吸收海绵层"), &staged.absorbing);
+                integer("X sponge cells", "X 方向吸收格数", staged.spongeX);
+                integer("Bottom sponge cells", "底部吸收格数", staged.spongeZ);
+                input("Sponge strength", "吸收强度", staged.spongeStrength, .1);
+            }
+        } else if (category == 3) {
+            if (ImGui::CollapsingHeader(l("Layers / palettes", "图层与独立色标"),
+                                        ImGuiTreeNodeFlags_DefaultOpen)) {
+                const char *components[]{"Vz", "Vx", "|V|", l("Pressure (Pa)", "压力（Pa）")};
+                ImGui::SetNextItemWidth(-1);
+                ImGui::Combo("##2Dcomponent", &component, components, 4);
+                ImGui::Checkbox(l("Wavefield", "波场图层"), &showWave);
+                ImGui::Checkbox(l("Material model", "介质图层"), &showModel);
+                ImGui::Checkbox(l("Normalized wave colorbar", "归一化波场色标"), &normalized);
+                ImGui::Checkbox(l("Actual grid [G]", "真实节点网格 [G]"), &grid);
+                ImGui::Checkbox(l("Sponge overlay [B]", "吸收区显示 [B]"), &sponge);
+                ImGui::TextUnformatted(l("Wave palette [Q]", "波场色带 [Q]"));
+                ImGui::SetNextItemWidth(-1);
+                ImGui::Combo("##2DwavePalette", &wavePalette,
+                             Seis3D::Curvilinear::RecordPalettes::wavePaletteNames);
+                ImGui::TextUnformatted(l("Gain", "显示增益"));
+                ImGui::SetNextItemWidth(-1);
+                ImGui::SliderFloat("##2DGain", &gain, .05f, 50, "%.2fx", ImGuiSliderFlags_Logarithmic);
+                ImGui::TextUnformatted(l("Model palette [E]", "模型配色 [E]"));
+                ImGui::SetNextItemWidth(-1);
+                ImGui::Combo("##2DmodelPalette", &modelPalette,
+                             Seis3D::Curvilinear::RecordPalettes::wavePaletteNames);
+                ImGui::TextUnformatted(l("Model property", "模型物性"));
+                ImGui::SetNextItemWidth(-1);
+                ImGui::Combo("##2DModelProperty", &modelComponent, "Vp\0Vs\0Density\0");
+            }
+        } else {
+            if (ImGui::CollapsingHeader(l("SEG-Y import", "SEG-Y 导入"), ImGuiTreeNodeFlags_DefaultOpen)) {
+                ImGui::SetNextItemWidth(-1);
+                ImGui::InputText("##2DimportPath", importPath.data(), importPath.size());
+                if (button("Browse input", "选择文件", FunctionRole3D::Model))
+                    browse(importPath, false);
+                ImGui::SameLine();
+                if (button("Import SEG-Y", "载入 SEG-Y", FunctionRole3D::Model))
+                    importSegy();
+                if (!imported.traces.empty()) {
+                    ImGui::Checkbox(l("Show imported records", "显示导入记录"), &useImported);
+                    ImGui::TextWrapped("%s", imported.description.c_str());
+                }
+            }
+            if (ImGui::CollapsingHeader(l("Raw SEG-Y export", "原始 SEG-Y 导出"),
+                                        ImGuiTreeNodeFlags_DefaultOpen)) {
+                ImGui::TextWrapped(
+                    "%s", l("Export the selected record source. Multiple components produce separate files.",
+                            "导出当前记录来源；多分量分别保存为独立文件。"));
+                const auto data = displayedRecords();
+                for (std::size_t c = 0; c < data.components.size(); ++c) {
+                    if (c)
+                        ImGui::SameLine();
+                    ImGui::Checkbox(data.components[c].c_str(), &exportComponents[c]);
+                }
+                ImGui::Checkbox(l("IEEE Float64 (default: Float32)", "IEEE Float64（默认 Float32）"),
+                                &ieee64);
+                ImGui::SetNextItemWidth(-1);
+                ImGui::InputText("##2Dsegy", segy.data(), segy.size());
+                if (button("Save as", "选择位置", FunctionRole3D::Export))
+                    browse(segy, true);
+                ImGui::SameLine();
+                if (button("Export SEG-Y", "导出 SEG-Y", FunctionRole3D::Export))
+                    exportSegy();
+            }
+            if (ImGui::CollapsingHeader(l("Model snapshot / legacy CSV", "模型快照与 CSV"))) {
+                ImGui::SetNextItemWidth(-1);
+                ImGui::InputText("##2Dvts", vts.data(), vts.size());
+                if (button("Export VTS snapshot", "导出 VTS 快照", FunctionRole3D::Export, {-1, 0}))
+                    writeSnapshot(
+                        simulation,
+                        std::filesystem::path(std::u8string(reinterpret_cast<const char8_t *>(vts.data()))),
+                        error);
+                ImGui::SetNextItemWidth(-1);
+                ImGui::InputText("##2Dcsv", csv.data(), csv.size());
+                if (button("Export Vx / Vz CSV", "导出 Vx/Vz 记录 CSV", FunctionRole3D::Export, {-1, 0}))
+                    writeReceivers(
+                        simulation,
+                        std::filesystem::path(std::u8string(reinterpret_cast<const char8_t *>(csv.data()))),
+                        error);
+            }
+        }
+        if (ImGui::CollapsingHeader(l("Diagnostics", "数值诊断"))) {
+            const auto &d = simulation.diagnostics();
+            ImGui::TextWrapped("%s", simulation.backend().deviceName.c_str());
+            ImGui::Text("PPW %.2f | Energy %.4g J/m", d.ppw, d.energy);
+            ImGui::Text("%.3f s | %.4f ms/step", d.totalStepMs / 1000,
+                        simulation.step() ? d.totalStepMs / simulation.step() : 0);
+            ImGui::Text("traction %.3g", d.tractionRelative);
+            if (d.ppw < 8)
+                ImGui::TextWrapped(
+                    "%s", l("Sampling is below the 8 PPW reference.", "空间采样低于参考每波长 8 点。"));
+        }
+        if (!error.empty())
+            ImGui::TextWrapped("%s", error.c_str());
+        else
+            ImGui::TextWrapped("%s", status.c_str());
+        ImGui::EndChild();
+        ImGui::SeparatorText(l("Session / rebuild", "会话与重置"));
+        ImGui::Text("%s f0 %.2f Hz | dt %.5f ms", l("Active", "生效"), simulation.parameters().frequency,
+                    simulation.dt() * 1000);
+        ImGui::TextColored(
+            functionColor3D(dirty() ? FunctionRole3D::Warning : FunctionRole3D::Run), "%s",
+            dirty() ? l("Pending changes: reset / apply or Run.", "参数待应用：重置并应用，或运行。")
+                    : l("Parameters applied", "参数已生效"));
+        if (button("Reset / apply parameters", "重置并应用参数",
+                   dirty() ? FunctionRole3D::Warning : FunctionRole3D::Model,
+                   {-1, ImGui::GetFrameHeight() * 1.4f}))
+            apply();
+        rebuildRect = {ImGui::GetItemRectMin(), ImGui::GetItemRectMax()};
+        const float half = (ImGui::GetContentRegionAvail().x - ImGui::GetStyle().ItemSpacing.x) / 2;
+        if (button("Undo edits", "撤销修改", FunctionRole3D::Display, {half, 0})) {
+            staged = simulation.parameters();
+            settings = activeSettings;
+            selectedBackend = static_cast<int>(simulation.backend().kind);
+            error.clear();
+        }
+        ImGui::SameLine();
+        if (button("Defaults", "恢复默认", FunctionRole3D::Display, {half, 0})) {
+            staged = Parameters{};
+            error.clear();
+        }
+        if (!error.empty()) {
+            ImGui::TextColored(functionColor3D(FunctionRole3D::Danger), "%s",
+                               l("Rebuild failed (hover for details)", "重建失败（悬停查看原因）"));
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("%s", error.c_str());
+        }
+        ImGui::End();
+    }
+    void wavefield() {
+        if (!waveWindow)
+            return;
+        if (!ImGui::Begin(label("Curved X-Z wavefield", "曲面 X–Z 波场").c_str(), &waveWindow)) {
+            ImGui::End();
+            return;
+        }
+        std::string frameError;
+        if (!simulation.readFrame(component, frame, frameError)) {
+            error = frameError;
+            ImGui::End();
+            return;
+        }
+        const auto &p = simulation.parameters();
+        const auto &g = simulation.grid();
+        const auto &material = modelComponent == 0 ? g.vp : modelComponent == 1 ? g.vs : g.density;
+        const auto mm = std::minmax_element(material.begin(), material.end());
+        const double minMaterial = *mm.first, maxMaterial = *mm.second;
+        double peak = 1e-30;
+        for (float v : frame)
+            peak = std::max(peak, std::abs(static_cast<double>(v)));
+        const double range = peak / gain;
+        const bool compactPlot = ImGui::GetContentRegionAvail().y < ImGui::GetFontSize() * 13;
+        if (ImGui::GetContentRegionAvail().x < 700)
+            ImGui::Text("%d x %d | %.1f x %.1f m", p.nx, p.nz, (p.nx - 1) * p.spacing,
+                        (p.nz - 1) * p.spacing);
+        else
+            ImGui::Text("X / Z: %.2f x %.2f m | %d x %d | f0 %.1f Hz", (p.nx - 1) * p.spacing,
+                        (p.nz - 1) * p.spacing, p.nx, p.nz, p.frequency);
+        const float plotHeight =
+            std::max(80.f, ImGui::GetContentRegionAvail().y -
+                               (compactPlot ? ImGui::GetFontSize() + 28 : ImGui::GetFontSize() * 2 + 65));
+        if (fit)
+            ImPlot::SetNextAxesToFit();
+        if (ImPlot::BeginPlot("##curved2D", {-1, plotHeight}, ImPlotFlags_NoLegend | ImPlotFlags_Equal)) {
+            const auto flags = plotHeight < 190 ? ImPlotAxisFlags_NoLabel : ImPlotAxisFlags_None;
+            ImPlot::SetupAxes("X (m)", l("Depth (m)", "深度 (m)"),
+                              flags | (plotHeight < 160 ? ImPlotAxisFlags_NoTickLabels : 0),
+                              ImPlotAxisFlags_Invert | flags);
+            // Fitting both bounds lets Equal expand the shorter axis, keeping the
+            // complete model in view without distorting physical aspect ratios.
+            const double xmax = (p.nx - 1) * p.spacing, zmax = (p.nz - 1) * p.spacing;
+            double zmin = 0;
+            for (int i = 0; i < p.nx; ++i)
+                zmin = std::min(zmin, g.coordinates[g.index(i + ghost, ghost)][1]);
+            if (plotHeight < ImGui::GetFontSize() * 10) {
+                ImPlot::SetupAxisTicks(ImAxis_X1, 0, xmax, 3);
+                ImPlot::SetupAxisTicks(ImAxis_Y1, 0, zmax, 2);
+                ImPlot::SetupAxisFormat(ImAxis_X1, "%.3g");
+                ImPlot::SetupAxisFormat(ImAxis_Y1, "%.3g");
+            }
+            const double boundsX[]{-.02 * xmax, 1.02 * xmax},
+                boundsZ[]{zmin - .02 * (zmax - zmin), zmax + .02 * (zmax - zmin)};
+            ImPlot::SetNextLineStyle({0, 0, 0, 0});
+            ImPlot::PlotLine("##modelBounds", boundsX, boundsZ, 2);
+            const auto limits = ImPlot::GetPlotLimits();
+            domainVisible =
+                limits.X.Min <= 0 && limits.X.Max >= xmax && limits.Y.Min <= zmin && limits.Y.Max >= zmax;
+            auto *draw = ImPlot::GetPlotDrawList();
+            ImPlot::PushPlotClipRect();
+            const auto toPixel = [&](int i, int k) {
+                const auto x = g.coordinates[g.index(i + ghost, k + ghost)];
+                return ImPlot::PlotToPixels(x[0], x[1]);
+            };
+            const auto plotSize = ImPlot::GetPlotSize();
+            renderStrideX =
+                std::max(1, static_cast<int>(std::ceil((p.nx - 1) / std::max(64.f, plotSize.x / 2))));
+            renderStrideZ =
+                std::max(1, static_cast<int>(std::ceil((p.nz - 1) / std::max(64.f, plotSize.y / 2))));
+            for (int k = 0; k < p.nz - 1; k += renderStrideZ)
+                for (int i = 0; i < p.nx - 1; i += renderStrideX) {
+                    const int i1 = std::min(p.nx - 1, i + renderStrideX),
+                              k1 = std::min(p.nz - 1, k + renderStrideZ);
+                    ImVec2 points[4]{toPixel(i, k), toPixel(i1, k), toPixel(i1, k1), toPixel(i, k1)};
+                    ImU32 colors[4];
+                    const int xx[]{i, i1, i1, i}, zz[]{k, k, k1, k1};
+                    for (int v = 0; v < 4; ++v) {
+                        const auto q = g.index(xx[v] + ghost, zz[v] + ghost);
+                        const double model = maxMaterial > minMaterial
+                                                 ? (material[q] - minMaterial) / (maxMaterial - minMaterial)
+                                                 : .45;
+                        auto base = showModel
+                                        ? ImGui::ColorConvertU32ToFloat4(paletteColor(model, modelPalette))
+                                        : palette3D().background;
+                        const double norm =
+                            std::clamp(frame[xx[v] + p.nx * zz[v]] / range, component == 2 ? 0.0 : -1.0, 1.0);
+                        if (showWave) {
+                            const auto wave = ImGui::ColorConvertU32ToFloat4(
+                                paletteColor(component == 2 ? norm : .5 + .5 * norm, wavePalette));
+                            const float alpha =
+                                showModel ? static_cast<float>(std::min(1.0, std::abs(norm) * 4)) : .95f;
+                            base = {base.x * (1 - alpha) + wave.x * alpha,
+                                    base.y * (1 - alpha) + wave.y * alpha,
+                                    base.z * (1 - alpha) + wave.z * alpha, 1};
+                        }
+                        if (sponge && p.absorbing &&
+                            (xx[v] < std::min(p.spongeX, p.nx / 3) ||
+                             xx[v] >= p.nx - std::min(p.spongeX, p.nx / 3) ||
+                             zz[v] >= p.nz - std::min(p.spongeZ, p.nz / 3))) {
+                            base.x = base.x * .8f + .2f;
+                            base.y = base.y * .8f + .1f;
+                        }
+                        colors[v] = ImGui::ColorConvertFloat4ToU32(base);
+                    }
+                    quad(draw, points, colors);
+                }
+            if (grid) {
+                for (int k = 0;; k = std::min(p.nz - 1, k + renderStrideZ)) {
+                    for (int i = 0; i < p.nx - 1; i += renderStrideX)
+                        draw->AddLine(toPixel(i, k), toPixel(std::min(p.nx - 1, i + renderStrideX), k),
+                                      color3D(palette3D().text, .25f));
+                    if (k == p.nz - 1)
+                        break;
+                }
+                for (int i = 0;; i = std::min(p.nx - 1, i + renderStrideX)) {
+                    for (int k = 0; k < p.nz - 1; k += renderStrideZ)
+                        draw->AddLine(toPixel(i, k), toPixel(i, std::min(p.nz - 1, k + renderStrideZ)),
+                                      color3D(palette3D().text, .25f));
+                    if (i == p.nx - 1)
+                        break;
+                }
+            }
+            for (const auto &r : simulation.receivers())
+                draw->AddCircleFilled(toPixel(r.x, r.z), 2.4f, IM_COL32(43, 194, 165, 240));
+            draw->AddCircleFilled(toPixel(p.sourceX < 0 ? p.nx / 2 : p.sourceX, p.sourceZ), 4.5f,
+                                  IM_COL32(246, 147, 39, 255));
+            ImPlot::PopPlotClipRect();
+            ImPlot::EndPlot();
+            fit = false;
+        }
+        if (grid && (renderStrideX > 1 || renderStrideZ > 1))
+            ImGui::Text("%s %d x %d", l("View stride (solver unchanged)", "显示抽样（计算网格不变）"),
+                        renderStrideX, renderStrideZ);
+        if (compactPlot) {
+            if (ImGui::BeginTable("##2DCompactLegends", 2, ImGuiTableFlags_SizingStretchSame)) {
+                for (int side = 0; side < 2; ++side) {
+                    ImGui::TableNextColumn();
+                    const auto at = ImGui::GetCursorScreenPos();
+                    const float width = ImGui::GetContentRegionAvail().x;
+                    for (int i = 0; i < 64; ++i)
+                        ImGui::GetWindowDrawList()->AddRectFilled(
+                            {at.x + width * i / 64, at.y}, {at.x + width * (i + 1) / 64, at.y + 6},
+                            paletteColor(i / 63., side ? modelPalette : wavePalette));
+                    ImGui::Dummy({width, 8});
+                    if (side)
+                        ImGui::Text("%s %.0f",
+                                    modelComponent == 0   ? "Vp"
+                                    : modelComponent == 1 ? "Vs"
+                                                          : "rho",
+                                    maxMaterial);
+                    else
+                        ImGui::Text("%s %s",
+                                    component == 0   ? "Vz"
+                                    : component == 1 ? "Vx"
+                                    : component == 2 ? "|V|"
+                                                     : "P",
+                                    normalized ? (component == 2 ? "[0,1]" : "[-1,1]")
+                                               : l("physical", "物理值"));
+                    if (ImGui::IsItemHovered())
+                        ImGui::SetTooltip(
+                            "%s %.4g .. %.4g %s", side ? "Model" : "Wave",
+                            side ? minMaterial : (component == 2 ? 0 : -range), side ? maxMaterial : range,
+                            side ? (modelComponent == 2 ? "kg/m3" : "m/s") : (component == 3 ? "Pa" : "m/s"));
+                }
+                ImGui::EndTable();
+            }
+            ImGui::End();
+            return;
+        }
+        const float width = ImGui::GetContentRegionAvail().x;
+        const auto bar = [&](int palette) {
+            const auto at = ImGui::GetCursorScreenPos();
+            for (int i = 0; i < 128; ++i)
+                ImGui::GetWindowDrawList()->AddRectFilled({at.x + width * i / 128, at.y},
+                                                          {at.x + width * (i + 1) / 128, at.y + 10},
+                                                          paletteColor(i / 127., palette));
+            ImGui::Dummy({width, 12});
+        };
+        bar(wavePalette);
+        ImGui::Text("%s | %s | %s %.4g %s",
+                    component == 0   ? "Vz"
+                    : component == 1 ? "Vx"
+                    : component == 2 ? "|V|"
+                                     : "Pressure",
+                    normalized ? (component == 2 ? "0 .. 1" : "-1 .. 1") : l("Physical scale", "物理刻度"),
+                    normalized ? "1 =" : "+/-", range, component == 3 ? "Pa" : "m/s");
+        bar(modelPalette);
+        ImGui::Text("%s: %.2f .. %.2f %s",
+                    modelComponent == 0   ? "Vp"
+                    : modelComponent == 1 ? "Vs"
+                                          : "Density",
+                    minMaterial, maxMaterial, modelComponent == 2 ? "kg/m3" : "m/s");
+        ImGui::End();
+    }
+    void records() {
+        if (!recordWindow)
+            return;
+        if (!ImGui::Begin(label("Receiver records", "接收记录").c_str(), &recordWindow)) {
+            ImGui::End();
+            return;
+        }
+        recordHeight = ImGui::GetWindowSize().y;
+        if (!imported.traces.empty()) {
+            bool source = useImported;
+            if (ImGui::Checkbox(l("Imported SEG-Y (off: simulation)", "导入 SEG-Y（取消：当前模拟）"),
+                                &useImported) &&
+                source != useImported) {
+                recordView.invalidate();
+                selectedReceiver = 0;
+            }
+        }
+        recordView.drawContent(displayedRecords(), selectedReceiver);
+        ImGui::End();
+    }
+    void shortcuts() {
+        const auto &io = ImGui::GetIO();
+        if (!io.WantTextInput && !ImGui::IsAnyItemActive() &&
+            !ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId | ImGuiPopupFlags_AnyPopupLevel)) {
+            if (ImGui::IsKeyPressed(ImGuiKey_F1))
+                help = !help;
+            if (!help) {
+                if (ImGui::IsKeyPressed(ImGuiKey_Space)) {
+                    if (running)
+                        running = false;
+                    else
+                        prepareRun(true);
+                }
+                if (ImGui::IsKeyPressed(ImGuiKey_N)) {
+                    if (prepareRun(false))
+                        simulation.advance(1, error);
+                }
+                if (ImGui::IsKeyPressed(ImGuiKey_C)) {
+                    clear();
+                }
+                if (ImGui::IsKeyPressed(ImGuiKey_R))
+                    fit = true;
+                if (ImGui::IsKeyPressed(ImGuiKey_F))
+                    parameterWindow = waveWindow = recordWindow = layout = true;
+                if (ImGui::IsKeyPressed(ImGuiKey_G))
+                    grid = !grid;
+                if (ImGui::IsKeyPressed(ImGuiKey_B))
+                    sponge = !sponge;
+                const int direction = io.KeyShift ? -1 : 1;
+                if (ImGui::IsKeyPressed(ImGuiKey_Q))
+                    wavePalette = (wavePalette + direction + 14) % 14;
+                if (ImGui::IsKeyPressed(ImGuiKey_W))
+                    component = (component + direction + 4) % 4;
+                if (ImGui::IsKeyPressed(ImGuiKey_E))
+                    modelPalette = (modelPalette + direction + 14) % 14;
+            }
+        }
+        if (help) {
+            const auto *vp = ImGui::GetMainViewport();
+            ImGui::SetNextWindowPos(vp->GetCenter(), ImGuiCond_Appearing, {.5f, .5f});
+            ImGui::SetNextWindowSize(
+                {std::min(1100.f, vp->WorkSize.x * .94f), std::min(350.f, vp->WorkSize.y * .72f)},
+                ImGuiCond_Appearing);
+            if (ImGui::Begin(l("Keyboard shortcuts###2DHelp", "快捷键说明###2DHelp"), &help,
+                             ImGuiWindowFlags_NoDocking)) {
+                if (ImGui::BeginTable("##2DHelpHorizontal", 3,
+                                      ImGuiTableFlags_SizingStretchSame | ImGuiTableFlags_BordersInnerV)) {
+                    ImGui::TableNextColumn();
+                    ImGui::SeparatorText(l("Run", "计算"));
+                    ImGui::TextWrapped(
+                        "%s", l("Space: run / pause\nN: one step\nC: clear current fields\nEdited parameters "
+                                "apply on Run or Reset / apply.",
+                                "Space：运行/"
+                                "暂停\nN：单步\nC：清空当前波场\n修改参数后，运行或重置并应用使之生效。"));
+                    ImGui::TableNextColumn();
+                    ImGui::SeparatorText(l("Display", "显示"));
+                    ImGui::TextWrapped(
+                        "%s", l("Q: wave palette\nW: component\nE: material palette\nShift: reverse\nG: grid "
+                                "/ B: sponge",
+                                "Q：波场色带\nW：显示分量\nE：模型配色\nShift：反向\nG：网格 / B：吸收区"));
+                    ImGui::TableNextColumn();
+                    ImGui::SeparatorText(l("Workspace", "工作区"));
+                    ImGui::TextWrapped("%s",
+                                       l("R: fit model\nF: restore layout\nF1 / Esc: close help\nAppearance: "
+                                         "adjust font size\nExport: import / export SEG-Y",
+                                         "R：适配模型\nF：恢复布局\nF1 / "
+                                         "Esc：关闭帮助\n界面外观：调整字体\n导出页：SEG-Y 导入/导出"));
+                    ImGui::EndTable();
+                }
+            }
+            ImGui::End();
+            if (ImGui::IsKeyPressed(ImGuiKey_Escape))
+                help = false;
+        }
+    }
+};
+} // namespace
+int runWorkbench2D(bool smoke, bool homeTest) {
+    std::string error;
+    SeisWave::Ui::AppRuntime runtime;
+    if (!runtime.open("SeisWave Lab | 2D Curvilinear P-SV | CPU / CUDA", smoke, error)) {
+        std::cerr << error << '\n';
+        return 1;
+    }
+    if (smoke)
+        std::filesystem::create_directories(SeisWave::Ui::outputRoot() / "screenshots/two-d");
+    std::filesystem::create_directories(SeisWave::Ui::outputRoot() / "validation/two-d");
+    Workbench app;
+    if (smoke) {
+        app.staged.nx = app.staged.nz = 160;
+        app.staged.spacing = 2.5;
+        app.staged.frequency = 30;
+        app.staged.relief = 5;
+        app.staged.sourceZ = 32;
+        app.staged.duration = .1;
+        app.staged.maxSteps = 0;
+        fitAcquisition(app.staged);
+    }
+    if (!app.apply()) {
+        std::cerr << app.error << '\n';
+        return 2;
+    }
+    if (smoke) {
+        if (!app.simulation.advance(app.simulation.totalSteps(), app.error)) {
+            std::cerr << app.error << '\n';
+            return 3;
+        }
+        const auto step = app.simulation.step();
+        auto invalid = app.staged;
+        invalid.nx = 2;
+        if (app.simulation.initialize(invalid, app.error) || app.simulation.step() != step)
+            throw std::runtime_error("2D failed initialization changed the running session");
+        app.error.clear();
+        if (!writeSnapshot(app.simulation, SeisWave::Ui::outputRoot() / "validation/two-d/smoke-2d.vts",
+                           app.error) ||
+            !writeReceivers(app.simulation, SeisWave::Ui::outputRoot() / "validation/two-d/smoke-2d.csv",
+                            app.error))
+            throw std::runtime_error(app.error);
+    }
+    const auto stepBefore = app.simulation.step();
+    const double dtBefore = app.simulation.dt();
+    double receiverFingerprint = 0;
+    for (const auto &r : app.simulation.receivers())
+        receiverFingerprint += std::accumulate(r.vz.begin(), r.vz.end(), 0.0);
+    for (int frame = 0; !glfwWindowShouldClose(runtime.window()); ++frame) {
+        if (smoke && !homeTest && frame % 10 == 0 && frame <= 50) {
+            app.category = (frame / 10) % 5;
+            const int sizes[3][2]{{1600, 1000}, {1280, 800}, {960, 640}};
+            const int index = (frame / 10) % 3;
+            glfwSetWindowSize(runtime.window(), sizes[index][0], sizes[index][1]);
+            setLanguage3D(frame >= 30 ? 0 : 1);
+            applyTheme3D(frame >= 30 ? 4 : 9);
+            SeisWave::Ui::setInterfaceFontSize(frame == 0         ? 20.f
+                                               : frame % 30 == 10 ? 22.f
+                                               : frame % 30 == 20 ? 26.f
+                                                                  : 18.f);
+            app.layout = true;
+            app.fit = true;
+        }
+        auto &io = ImGui::GetIO();
+        if (smoke && !homeTest) {
+            if (frame == 53) {
+                const auto at = app.recordView.optionsBounds;
+                io.AddFocusEvent(true);
+                io.AddMousePosEvent((at[0] + at[2]) * .5f, (at[1] + at[3]) * .5f);
+            }
+            if (frame == 54)
+                io.AddMouseButtonEvent(0, true);
+            if (frame == 55)
+                io.AddMouseButtonEvent(0, false);
+            if (frame == 58)
+                io.AddKeyEvent(ImGuiKey_Escape, true);
+            if (frame == 59)
+                io.AddKeyEvent(ImGuiKey_Escape, false);
+            if (frame == 60) {
+                app.category = 1;
+                app.layout = true;
+                glfwSetWindowSize(runtime.window(), 1600, 1000);
+                setLanguage3D(1);
+                applyTheme3D(9);
+                SeisWave::Ui::setInterfaceFontSize(24);
+            }
+            if (frame == 61)
+                io.AddFocusEvent(true);
+            if (frame == 62) {
+                const auto at = app.frequencyRect;
+                io.AddMousePosEvent(at.Min.x + 45, at.GetCenter().y);
+                io.AddMouseButtonEvent(0, true);
+            }
+            if (frame == 63)
+                io.AddMouseButtonEvent(0, false);
+            if (frame == 64) {
+                io.AddKeyEvent(ImGuiMod_Ctrl, true);
+                io.AddKeyEvent(ImGuiKey_A, true);
+            }
+            if (frame == 65) {
+                io.AddKeyEvent(ImGuiKey_A, false);
+                io.AddKeyEvent(ImGuiMod_Ctrl, false);
+                io.AddInputCharactersUTF8("45");
+            }
+            if (frame == 66)
+                io.AddKeyEvent(ImGuiKey_Enter, true);
+            if (frame == 67) {
+                io.AddKeyEvent(ImGuiKey_Enter, false);
+                const auto at = app.rebuildRect.GetCenter();
+                io.AddMousePosEvent(at.x, at.y);
+            }
+            if (frame == 68) {
+                const auto at = app.rebuildRect.GetCenter();
+                io.AddMousePosEvent(at.x, at.y);
+                io.AddMouseButtonEvent(0, true);
+            }
+            if (frame == 69)
+                io.AddMouseButtonEvent(0, false);
+            if (frame == 71) {
+                if (app.simulation.parameters().frequency != 45 || app.simulation.step() != 0 ||
+                    app.simulation.dt() >= dtBefore) {
+                    std::cerr << "staged=" << app.staged.frequency
+                              << " active=" << app.simulation.parameters().frequency
+                              << " step=" << app.simulation.step() << " dt=" << app.simulation.dt()
+                              << " error=" << app.error << " rect=" << app.frequencyRect.Min.x << ","
+                              << app.frequencyRect.Min.y << " reset=" << app.rebuildRect.Min.x << ","
+                              << app.rebuildRect.Min.y << '\n';
+                    int w, h;
+                    glfwGetFramebufferSize(runtime.window(), &w, &h);
+                    SeisWave::Ui::capture(SeisWave::Ui::outputRoot() / "screenshots/two-d/edit-failure.ppm",
+                                          w, h);
+                    throw std::runtime_error("Edited frequency / bottom reset button did not rebuild dt");
+                }
+            }
+            if (frame == 71)
+                io.AddKeyEvent(ImGuiKey_N, true);
+            if (frame == 72)
+                io.AddKeyEvent(ImGuiKey_N, false);
+            if (frame == 73 && app.simulation.step() != 1)
+                throw std::runtime_error("N failed after parameter reset");
+            if (frame == 74) {
+                const auto path = SeisWave::Ui::outputRoot() / "validation/two-d/ui-vz.sgy";
+                std::snprintf(app.segy.data(), app.segy.size(), "%s", path.string().c_str());
+                app.exportSegy();
+                std::snprintf(app.importPath.data(), app.importPath.size(), "%s", path.string().c_str());
+                app.importSegy();
+                if (!app.useImported || app.imported.traces.size() != app.simulation.receivers().size())
+                    throw std::runtime_error("2D SEG-Y UI round trip failed");
+                app.category = 4;
+                app.recordView.settings.style = 2;
+            }
+            if (frame == 76)
+                io.AddKeyEvent(ImGuiKey_C, true);
+            if (frame == 77)
+                io.AddKeyEvent(ImGuiKey_C, false);
+            if (frame == 78 && (app.simulation.step() != 0 || app.simulation.parameters().frequency != 45 ||
+                                app.imported.traces.empty()))
+                throw std::runtime_error("Clear altered parameters or imported records");
+            if (frame == 80)
+                io.AddKeyEvent(ImGuiKey_F1, true);
+            if (frame == 81)
+                io.AddKeyEvent(ImGuiKey_F1, false);
+            if (frame == 85)
+                io.AddKeyEvent(ImGuiKey_Escape, true);
+            if (frame == 86)
+                io.AddKeyEvent(ImGuiKey_Escape, false);
+            if (frame == 88) {
+                app.staged.frequency = 50;
+                if (!app.prepareRun(true) || app.simulation.parameters().frequency != 50)
+                    throw std::runtime_error("Run failed to apply pending frequency");
+                app.running = false;
+            }
+            if (frame == 91) {
+                app.category = 0;
+                app.openLayers = true;
+            }
+            if (frame == 94) {
+                app.layerPreset = 2;
+                app.layerDraft = materialPresets()[2].layers;
+            }
+            if (frame == 96) {
+                const auto at = app.layerUseRect.GetCenter();
+                io.AddMousePosEvent(at.x, at.y);
+                io.AddMouseButtonEvent(0, true);
+            }
+            if (frame == 97)
+                io.AddMouseButtonEvent(0, false);
+            if (frame == 99) {
+                if (!app.staged.layered || app.staged.layers.size() != 5 ||
+                    app.simulation.parameters().layered)
+                    throw std::runtime_error("Layer dialog failed to apply staged preset transactionally");
+                if (!app.apply())
+                    throw std::runtime_error(app.error);
+            }
+            if (frame == 101) {
+                const auto path = SeisWave::Ui::outputRoot() / "validation/terrain-2d/ui-profile.csv";
+                std::filesystem::create_directories(path.parent_path());
+                {
+                    std::ofstream out(path);
+                    out << "x_m,elevation_m\n1000,200\n1200,203\n1400,200\n";
+                }
+                std::snprintf(app.surfacePath.data(), app.surfacePath.size(), "%s", path.string().c_str());
+                if (!app.loadTerrain() || !app.apply())
+                    throw std::runtime_error(app.error);
+                app.openTerrain = true;
+            }
+            if (frame == 106) {
+                const auto at = app.terrainDoneRect.GetCenter();
+                io.AddMousePosEvent(at.x, at.y);
+                io.AddMouseButtonEvent(0, true);
+            }
+            if (frame == 107)
+                io.AddMouseButtonEvent(0, false);
+            if (frame == 105) {
+                glfwSetWindowSize(runtime.window(), 960, 640);
+                SeisWave::Ui::setInterfaceFontSize(26);
+            }
+            if (frame == 109) {
+                glfwSetWindowSize(runtime.window(), 1600, 1000);
+                SeisWave::Ui::setInterfaceFontSize(24);
+            }
+            if (frame == 112) {
+                app.staged.nx = 1200;
+                app.staged.nz = 1100;
+                app.staged.spacing = 10;
+                app.staged.relief = 0;
+                app.staged.layered = false;
+                app.staged.importedSurface = false;
+                app.staged.maxSteps = 2;
+                app.staged.duration = .01;
+                app.grid = true;
+                if (!app.apply() || !app.simulation.advance(2, app.error))
+                    throw std::runtime_error(app.error);
+            }
+        }
+        if (homeTest && frame == 2) {
+            const auto at = app.homeRect.GetCenter();
+            io.AddMousePosEvent(at.x, at.y);
+            io.AddMouseButtonEvent(0, true);
+        }
+        if (homeTest && frame == 3)
+            io.AddMouseButtonEvent(0, false);
+        if (app.running) {
+            const auto begin = std::chrono::steady_clock::now();
+            for (int i = 0; i < 8 && !app.simulation.completed(); ++i) {
+                if (!app.simulation.advance(1, app.error)) {
+                    app.running = false;
+                    break;
+                }
+                if (std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - begin)
+                        .count() > 16)
+                    break;
+            }
+            if (app.simulation.completed())
+                app.running = false;
+        }
+        runtime.begin();
+        app.toolbar();
+        app.controls();
+        app.modelDialogs();
+        if (app.dirty())
+            app.running = false;
+        app.wavefield();
+        app.records();
+        app.shortcuts();
+        runtime.present();
+        if (app.home) {
+            std::cout << "2D Home route PASS\n";
+            return SeisWave::Ui::returnHome;
+        }
+        if (smoke && !homeTest && frame == 83) {
+            const auto *help =
+                ImGui::FindWindowByName(l("Keyboard shortcuts###2DHelp", "快捷键说明###2DHelp"));
+            if (!app.help || !help || help->Size.x <= help->Size.y)
+                throw std::runtime_error("F1 help is not horizontal");
+            int w, h;
+            glfwGetFramebufferSize(runtime.window(), &w, &h);
+            SeisWave::Ui::capture(SeisWave::Ui::outputRoot() / "screenshots/two-d/help-2d.ppm", w, h);
+        }
+        if (smoke && !homeTest && frame == 90) {
+            if (!app.error.empty())
+                throw std::runtime_error(app.error);
+            std::cout << "2D UI PASS: edited 45 Hz by keyboard, bottom reset recomputed dt, N/C, "
+                         "live/imported SEG-Y, automatic apply on Run, horizontal F1, fonts 18..26\n";
+        }
+        if (smoke && !homeTest && (frame == 95 || frame == 104)) {
+            int w, h;
+            glfwGetFramebufferSize(runtime.window(), &w, &h);
+            SeisWave::Ui::capture(SeisWave::Ui::outputRoot() / (frame == 95
+                                                                    ? "screenshots/two-d/layers-2d.ppm"
+                                                                    : "screenshots/two-d/terrain-2d.ppm"),
+                                  w, h);
+            if (ImGui::GetCurrentContext()->OpenPopupStack.empty())
+                throw std::runtime_error("Model editor popup did not open");
+        }
+        if (smoke && !homeTest && frame == 110) {
+            if (!ImGui::GetCurrentContext()->OpenPopupStack.empty() ||
+                !app.simulation.parameters().importedSurface ||
+                app.simulation.parameters().layers.size() != 5)
+                throw std::runtime_error("Terrain / layer dialog workflow failed");
+            std::cout << "2D model UI PASS: five-layer preset popup, external CSV terrain, datum, geometry / "
+                         "dt rebuild\n";
+        }
+        if (smoke && !homeTest && frame == 116) {
+            if (app.renderStrideX <= 1 || app.renderStrideZ <= 1 || !app.domainVisible ||
+                app.simulation.parameters().nx != 1200 || app.simulation.parameters().nz != 1100)
+                throw std::runtime_error("Large 2D view sampling / bounds failed");
+            std::cout << "2D large model UI PASS: 1200x1100, full simulation / adaptive view stride\n";
+            return 0;
+        }
+        if (smoke && !homeTest && frame % 10 == 7 && frame <= 57) {
+            int width, height;
+            glfwGetFramebufferSize(runtime.window(), &width, &height);
+            if (!SeisWave::Ui::capture(SeisWave::Ui::outputRoot() /
+                                           ("screenshots/two-d/2d-" + std::to_string(frame / 10) + ".ppm"),
+                                       width, height))
+                return 4;
+            double check = 0;
+            for (const auto &r : app.simulation.receivers())
+                check += std::accumulate(r.vz.begin(), r.vz.end(), 0.0);
+            if (!app.domainVisible || app.recordHeight < 140)
+                throw std::runtime_error("2D layout cropped the physical model or receiver panel");
+            if (app.simulation.step() != stepBefore || app.simulation.dt() != dtBefore ||
+                check != receiverFingerprint || !app.error.empty())
+                throw std::runtime_error("2D presentation modified the numerical session");
+            if (frame == 57) {
+                const auto &popups = ImGui::GetCurrentContext()->OpenPopupStack;
+                if (popups.empty() || !popups.back().Window || !popups.back().Window->Active)
+                    throw std::runtime_error("Record display parameters did not open");
+                std::cout << "2D workspace PASS: CPU/CUDA session, failed rebuild, VTS/CSV, 6 layouts, "
+                             "bilingual themes, raw records retained\n";
+                // Continue with real widget edits, reset, SEG-Y and keyboard checks.
+            }
+        }
+        if (homeTest && frame > 8)
+            throw std::runtime_error("2D Home button did not route back");
+    }
+    return 0;
+}
+} // namespace Seis2D::Curvilinear::Ui

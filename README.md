@@ -1,10 +1,18 @@
-# SeisWave Lab · Seis3D Curvilinear
+# SeisWave Lab · 二维 / 三维曲面弹性波模拟
 
 ![程序图标](resources/icons/preview64.png)
 
-三维曲网格各向同性弹性波模拟与交互式可视化工作台。数值核心采用同位网格交替 MacCormack-DRP 空间差分与四阶段时间组合，支持 CPU/OpenMP 和 CUDA Float64；界面使用 Dear ImGui Docking、ImPlot 和 OpenGL 4.3。
+二维和三维曲网格各向同性弹性波模拟与交互式可视化工作台。主页左侧进入二维曲面 P–SV 剖面，右侧进入三维曲面体网格。两个维度有独立求解器、模型与记录会话，共用设备检测、差分系数和界面外观。数值核心采用同位网格交替 MacCormack-DRP 空间差分与四阶段时间组合，均支持 CPU/OpenMP 和 CUDA Float64；界面使用 Dear ImGui Docking、ImPlot 和 OpenGL 4.3。
 
-**完整说明**：[背景、理论、实现过程、界面介绍与附录](docs/PROJECT_MANUAL.md) · [数值原理](docs/NUMERICAL_METHOD.md) · [操作指南](docs/USER_GUIDE.md) · [构建说明](docs/BUILDING.md) · [文档导航](docs/README.md)
+**完整说明**：[二维工作流与五场理论](docs/TWO_D_WORKFLOW.md) · [三维学术说明](docs/PROJECT_MANUAL.md) · [数值原理](docs/NUMERICAL_METHOD.md) · [操作指南](docs/USER_GUIDE.md) · [构建说明](docs/BUILDING.md) · [文档导航](docs/README.md)
+
+![二维曲面剖面与三维曲面体网格主页](docs/images/two-d/home.png)
+
+二维提供“建模—采集—运行—显示—导出”流程、真实曲面节点网格、独立模型/波场色标、Vx/Vz 接收测线和 CSV/VTS 导出。默认 200×200、h=2.5 m、f0=30 Hz，支持最多 1000×1000 物理节点。二维采用平面应变线源假设，与三维点源的振幅和几何扩散不同；尚不包含 SH 分量。
+
+二维与三维共用地震记录显示模块，支持独立色带、增益、色标范围及 AGC。二维可导入 SEG-Y，并按 Vx/Vz 分量导出 Float32/64 SEG-Y。参数面板采用折叠分组，底部固定“重置并应用”；运行也会先应用待修改参数。F1 帮助横向排列，字体可调；主页示意和底部动态波形均由程序绘制并随主题变化。详见[记录显示与 SEG-Y](docs/SEGY_AND_RECORDS.md)。二维每方向允许 8–16384 个节点，实际受内存/显存约束；增加分层介质表格与常用预设，以及外部 X–高程剖面导入。主页采用单色密集曲网格，维度切换保留最大化状态。详见[外部高程与模型容量](docs/SURFACE_PROFILES.md)。
+
+任一工作区顶部“主页”按钮可返回维度选择；返回会结束当前会话，重新进入从零时刻开始。`--2d`、`--3d` 可直接进入对应界面。以下列出原三维工作区的功能与范围。
 
 ![建模页与曲面三维工作台](docs/images/01-model.png)
 
@@ -29,7 +37,10 @@
 │  ├─ CMakeLists.txt        独立构建入口
 │  ├─ CMakePresets.json     Release / Debug 预设
 │  ├─ cmake/               构建布局、选项与目标定义
-│  ├─ src/  include/       程序实现与公共头文件
+│  ├─ src/common/          共享设备服务、主页、语言主题
+│  ├─ src/two_d/           二维求解、CUDA、验证与 ui/
+│  ├─ src/three_d/         三维求解、CUDA、验证与 ui/
+│  ├─ include/             SeisCommon、Seis2D、Seis3D 公共头文件
 │  ├─ resources/icons/     可随源码提交的图标原件
 │  ├─ shaders/ third_party/
 │  ├─ docs/                完整文档与 images 图片资源

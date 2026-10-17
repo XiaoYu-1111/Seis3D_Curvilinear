@@ -1,5 +1,15 @@
 # 构建、设备选择与程序分发
 
+## 二维、三维和共享模块
+
+程序默认打开主页，左侧为二维曲面模拟，右侧为三维曲面模拟；`Seis3DCurvilinear.exe --2d` / `--3d` 可直接进入。三维旧命令行与截图参数仍由三维工作区处理。二维操作和五场理论见[二维工作流](TWO_D_WORKFLOW.md)。
+
+`src/two_d`、`src/three_d` 分别包含本维度的 CPU/CUDA 求解、验证和 ui 子目录；`src/common` 放设备服务，`src/common/ui` 放主页、应用图形生命周期和语言主题。公共头分别在 `include/Seis2D`、`include/Seis3D`、`include/SeisCommon`，include 通过对应 CMake 目标传播，源码不再留有旧位置副本。
+
+`seis2d_curvilinear_core`、`seis3d_curvilinear_core` 分别链接共享 `seis_compute`；二维核心不链接三维核心。启用 CUDA 时分别链接 `seis2d_cuda`、`seis3d_cuda`，设备探测由 `seis_compute_cuda` 提供。`seis2d_ui`、`seis3d_ui` 链接本维度核心及 `seis_ui_common`，最终组合为原名 EXE。VS 中各目标按真实源码目录分组。关闭 CUDA 时两个核心均可使用 CPU；`seis2d_validation` 验证二维方程及后端一致性。
+
+`seis_records` 提供独立 SEG-Y 读写，不依赖 CUDA 或图形上下文；`seis_record_io_validation` 检查数据交换。二维/三维共享的 `RecordView` 位于 `src/common/ui`，三维 `RecordView3D` 是兼容包装。SEG-Y 模块采用标准库实现，不增加外部 SEG-Y SDK 依赖。导入文件及导出限制见[记录与 SEG-Y](SEGY_AND_RECORDS.md)。
+
 ## 独立仓库与外部输出
 
 包含本文件、`CMakeLists.txt`、`src` 和 `include` 的目录就是 Git 仓库根目录。在 VS 中直接打开这一层。构建不再依赖外层工作区的配置、图标、许可或原始参考仓库；外层 CMake 仅保留为本机兼容包装入口。
