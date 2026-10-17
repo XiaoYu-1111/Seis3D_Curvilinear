@@ -1,0 +1,2 @@
+#include <windows.h>
+101 ICON "@SEIS3D_APP_ICON@"
