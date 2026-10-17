@@ -71,7 +71,7 @@ void evaluateRhs(State& work, State& rhs, const Grid3D& grid, const SimulationPa
     for (auto& values : rhs.field) std::fill(values.begin(), values.end(), 0.0);
     (void)lambda;(void)mu;
     const int g = grid.ghost;
-    const double sourceScale = 2.0e8 / (p.density * grid.dx * grid.dy * grid.dz);
+    const double sourceScale = (p.source.kind==SeisWave::SourceKind::IsotropicMoment?p.sourceMoment:p.sourceForce) / (p.density * grid.dx * grid.dy * grid.dz);
     const double tau = kPi * p.dominantFrequency * (time - 1.5 / p.dominantFrequency);
     const double source = sourceScale * (1.0 - 2.0 * tau * tau) * std::exp(-tau * tau);
     auto mesh=materialMesh;mesh.source=sourceWeights.data();mesh.damping=dampingRates.data();
@@ -176,9 +176,10 @@ struct CpuSimulation3D::Impl {
     Diagnostics3D diagnostics;
     State state, k1, k2, k3, k4, stage, base;
     std::vector<double> sourceWeights;
+    std::array<std::vector<double>,3> sourceGradient;
     std::vector<double> dampingRates;
     std::vector<double> materialLambda,materialMu,materialDensity;
-    Point::Mesh mesh() const {auto result=pointMesh(grid,lambda,mu,parameters.density);if(!materialLambda.empty()){result.materialLambda=materialLambda.data();result.materialMu=materialMu.data();result.materialDensity=materialDensity.data();}return result;}
+    Point::Mesh mesh() const {auto result=pointMesh(grid,lambda,mu,parameters.density);const auto direction=SeisWave::unitSourceDirection(parameters.source);for(int a=0;a<3;++a){result.sourceDirection[a]=direction[a];result.sourceGradient[a]=sourceGradient[a].empty()?nullptr:sourceGradient[a].data();}result.sourceAmplitude=parameters.source.kind==SeisWave::SourceKind::IsotropicMoment?parameters.sourceMoment:parameters.sourceForce;if(!materialLambda.empty()){result.materialLambda=materialLambda.data();result.materialMu=materialMu.data();result.materialDensity=materialDensity.data();}return result;}
     std::vector<ReceiverTrace3D> receiverTraces;
     double dt{}, lambda{}, mu{};
     int step{}, steps{};
@@ -255,7 +256,13 @@ bool CpuSimulation3D::initialize(const SimulationParameters& p,std::string& erro
     }
     const std::size_t points=static_cast<std::size_t>(p.nx+2*ghostWidth3D)*(p.ny+2*ghostWidth3D)*(p.nz+2*ghostWidth3D);
     if(points>maxPaddedNodes3D) { error="Node budget exceeds a 300 x 300 x 300 model with three ghost layers per face."; return false; }
+    if(!SeisWave::validateSource(p.source,false,error))return false;
+    if(!std::isfinite(p.sourceForce)||!std::isfinite(p.sourceMoment)||(p.source.kind==SeisWave::SourceKind::IsotropicMoment?p.sourceMoment:p.sourceForce)<=0){error="Source amplitudes must be finite and the active force (N) or moment (N*m) must be positive.";return false;}
     const auto source=sourceIndices3D(p);
+    if(p.source.kind==SeisWave::SourceKind::IsotropicMoment &&
+       (p.nx<11||p.ny<11||p.nz<11||source[0]<5||source[0]>p.nx-6||source[1]<5||source[1]>p.ny-6||source[2]<5||source[2]>p.nz-6)) {
+        error="Isotropic moment needs 11+ nodes per axis and source center five nodes inside each face.";return false;
+    }
     if(p.sourceX< -1||p.sourceY< -1||source[0]<2||source[0]>p.nx-3||source[1]<2||source[1]>p.ny-3||source[2]<2||source[2]>p.nz-3) {
         error="Source must stay two nodes inside every physical face; X/Y may be -1 for center.";return false;
     }
@@ -354,6 +361,15 @@ bool CpuSimulation3D::initialize(const SimulationParameters& p,std::string& erro
         for(int k=-2;k<=2;++k)for(int j=-2;j<=2;++j)for(int i=-2;i<=2;++i) {
             const auto q=grid.index(grid.ghost+source[0]+i,grid.ghost+source[1]+j,grid.ghost+source[2]+k);
             next->sourceWeights[q]=std::exp(-0.5*(i*i+j*j+k*k))/(sourceSum*grid.jacobian[q]);
+        }
+        if(p.source.kind==SeisWave::SourceKind::IsotropicMoment) {
+            for(auto &v:next->sourceGradient)v.assign(points,0);
+            const auto flux=[&](std::ptrdiff_t q,int axis,int component) {return grid.jacobian[q]*grid.inverseMetrics[q][3*axis+component]*next->sourceWeights[q];};
+            for(int k=source[2]-4;k<=source[2]+4;++k)for(int j=source[1]-4;j<=source[1]+4;++j)for(int i=source[0]-4;i<=source[0]+4;++i) {
+                const auto q=grid.index(i+grid.ghost,j+grid.ghost,k+grid.ghost);
+                const auto force=SeisWave::isotropicMomentPattern(q,3,{1,grid.nx,static_cast<std::ptrdiff_t>(grid.nx)*grid.ny},p.spacing,grid.jacobian[q],flux);
+                for(int a=0;a<3;++a)next->sourceGradient[a][q]=force[a];
+            }
         }
         const int receiverCount=static_cast<int>(receiverNodes.size());
         next->receiverTraces.resize(receiverCount);
@@ -534,6 +550,8 @@ SimulationResult CpuSimulation3D::snapshot() const {
     result.grid=s.grid; result.steps=s.step; result.dt=s.dt;
     result.modelVp=s.parameters.vp; result.modelVs=s.parameters.vs;
     result.modelDensity=s.parameters.density;
+    result.sourceMechanism=s.parameters.source;result.sourceForce=s.parameters.sourceForce;
+    result.sourceMoment=s.parameters.sourceMoment;result.sourceFrequency=s.parameters.dominantFrequency;
     if(s.parameters.layeredMaterial){const auto count=s.grid.coordinates.size();result.materialVp.resize(count);result.materialVs.resize(count);result.materialDensity=s.materialDensity;result.layerIds.resize(count);for(std::size_t q=0;q<count;++q){result.materialVp[q]=std::sqrt((s.materialLambda[q]+2*s.materialMu[q])/s.materialDensity[q]);result.materialVs[q]=std::sqrt(s.materialMu[q]/s.materialDensity[q]);result.layerIds[q]=materialLayerAtDepth3D(s.parameters,materialDepth3D(s.parameters,s.grid,q));}}
 
     const auto source=sourceIndices3D(s.parameters);result.sourcePosition=s.grid.coordinates[s.grid.index(source[0]+s.grid.ghost,source[1]+s.grid.ghost,source[2]+s.grid.ghost)];

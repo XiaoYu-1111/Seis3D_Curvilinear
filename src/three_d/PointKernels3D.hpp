@@ -16,6 +16,8 @@ struct Mesh {
     double h{},lambda{},mu{},density{};
     const double *metrics{},*normals{},*jacobian{},*source{},*damping{};
     const double *materialLambda{},*materialMu{},*materialDensity{};
+    double sourceDirection[3]{0,0,1},sourceAmplitude{2e8};
+    const double *sourceGradient[3]{};
 };
 SEIS_POINT double localLambda(const Mesh& g,std::size_t q){return g.materialLambda?g.materialLambda[q]:g.lambda;}
 SEIS_POINT double localMu(const Mesh& g,std::size_t q){return g.materialMu?g.materialMu[q]:g.mu;}
@@ -100,8 +102,9 @@ SEIS_POINT void rhs(const Fields& w,Fields out,const Mesh& g,std::size_t q,doubl
     }
     out.f[0][q]=(grad[3][0]+grad[6][1]+grad[7][2])/density;
     out.f[1][q]=(grad[6][0]+grad[4][1]+grad[8][2])/density;
-    out.f[2][q]=(grad[7][0]+grad[8][1]+grad[5][2])/density+source*g.source[q]*(g.density/density);
-    if(depth<=(dirs[2]?3:1))for(int a=0;a<3;++a)out.f[a][q]=surfaceMomentum(w,g,q,a,dirs,depth)+(a==2?source*g.source[q]*(g.density/density):0);
+    out.f[2][q]=(grad[7][0]+grad[8][1]+grad[5][2])/density;
+    if(depth<=(dirs[2]?3:1))for(int a=0;a<3;++a)out.f[a][q]=surfaceMomentum(w,g,q,a,dirs,depth);
+    for(int a=0;a<3;++a)out.f[a][q]+=source*(g.sourceGradient[a]?g.sourceGradient[a][q]:g.source[q]*g.sourceDirection[a])*(g.density/density);
     const double div=grad[0][0]+grad[1][1]+grad[2][2];
     out.f[3][q]=lambda*div+2*mu*grad[0][0];out.f[4][q]=lambda*div+2*mu*grad[1][1];out.f[5][q]=lambda*div+2*mu*grad[2][2];
     out.f[6][q]=mu*(grad[0][1]+grad[1][0]);out.f[7][q]=mu*(grad[0][2]+grad[2][0]);out.f[8][q]=mu*(grad[1][2]+grad[2][1]);

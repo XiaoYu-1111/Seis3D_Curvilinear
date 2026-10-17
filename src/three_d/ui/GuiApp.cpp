@@ -6,6 +6,7 @@
 #include "imgui_impl_opengl3.h"
 #include "SceneRenderer3D.hpp"
 #include "AppRuntime.hpp"
+#include "SourceControls.hpp"
 #include "Workbench3D.hpp"
 #include "Presentation3D.hpp"
 #include "RecordView3D.hpp"
@@ -676,11 +677,19 @@ struct Workbench3D {
 
     void sourceControls() {
         ImGui::TextColored(functionColor3D(FunctionRole3D::Warning),tr3D("Source"));
+        if(SeisWave::Ui::sourceControls(edited.source,edited.sourceForce,edited.sourceMoment,false)) {
+            dirty=true;
+            if(edited.source.kind==SeisWave::SourceKind::IsotropicMoment && edited.nx>=11 && edited.ny>=11 && edited.nz>=11) {
+                if(edited.sourceX>=0)edited.sourceX=std::clamp(edited.sourceX,5,edited.nx-6);
+                if(edited.sourceY>=0)edited.sourceY=std::clamp(edited.sourceY,5,edited.ny-6);
+                edited.sourceZ=std::clamp(edited.sourceZ,5,edited.nz-6);
+            }
+        }
         ImGui::TextUnformatted(tr3D("Source node X / Y / Z (zero-based)"));ImGui::SetNextItemWidth(-1);
         int source[3]{edited.sourceX,edited.sourceY,edited.sourceZ};
         if(ImGui::InputInt3("##sourceNodes",source)){edited.sourceX=source[0];edited.sourceY=source[1];edited.sourceZ=source[2];dirty=true;}
-        ImGui::TextWrapped(tr3D("X/Y = -1 centers the source. Keep the center at least two nodes inside each physical face."));
-        if(ImGui::Button(label3D("Center source"),{-1,0})){edited.sourceX=edited.sourceY=-1;edited.sourceZ=3;dirty=true;}
+        ImGui::TextWrapped(edited.source.kind==SeisWave::SourceKind::IsotropicMoment?(language3D()?"X/Y=-1 表示居中；爆炸源心距各物理边界至少 5 个节点。":"X/Y=-1 centers source; isotropic moment center needs five nodes inside each physical face."):tr3D("X/Y = -1 centers the source. Keep the center at least two nodes inside each physical face."));
+        if(ImGui::Button(label3D("Center source"),{-1,0})){edited.sourceX=edited.sourceY=-1;edited.sourceZ=edited.source.kind==SeisWave::SourceKind::IsotropicMoment?5:3;dirty=true;}
         if(ImGui::Button(label3D("Source slices"),{-1,0})){const auto index=sourceIndices3D(simulation->parameters());slices={index[0],index[1],index[2]};sliceViews={};}
         const auto activeSource=sourceIndices3D(simulation->parameters());const auto& activeGrid=simulation->grid();
         const auto& xyz=activeGrid.coordinates[activeGrid.index(activeSource[0]+activeGrid.ghost,activeSource[1]+activeGrid.ghost,activeSource[2]+activeGrid.ghost)];
@@ -698,7 +707,7 @@ struct Workbench3D {
         ImGui::TextWrapped(tr3D("Refining spacing also shrinks physical size and changes terrain compression. Review source depth, flatten depth, duration and boundaries together."));
         samplingSummary();
         ImGui::TextWrapped(tr3D("Duration and maximum steps are configured in the Run tab."));
-        ImGui::TextWrapped(tr3D("One vertical force with a two-node Gaussian radius. Source position/frequency changes apply on rebuild and reset receiver records."));
+        ImGui::TextWrapped(language3D()?"体力源采用半径 2 格的高斯核；爆炸源采用其保守梯度，半径 4 格。类型、方向、幅值或主频改变后重建生效。":"Body force: radius-two Gaussian; explosion: its conservative gradient, radius four. Mechanism, direction, amplitude and frequency apply on rebuild.");
     }
 
     void workflowNavigation() {
@@ -1142,6 +1151,7 @@ bool captureFrame3D(const std::filesystem::path& output,int width,int height) {
 int runWorkbench3D(int argc,char** argv) {
     const std::string mode=argc>1?argv[1]:"";
     const bool routeSmoke=mode=="--smoke-route-3d";
+    const bool sourceSmoke=mode=="--smoke-sources";
     const bool resizeSmoke=mode=="--smoke-resize";
     const bool deviceSmoke=mode=="--smoke-devices";
     const bool cudaSmoke=mode=="--smoke-cuda"||deviceSmoke;
@@ -1157,7 +1167,7 @@ int runWorkbench3D(int argc,char** argv) {
     const bool layersSmoke=mode=="--smoke-layers";
     const bool workspaceSmoke=mode=="--smoke-workspace";
     const bool recordsSmoke=mode=="--smoke-records";
-    const bool uiSmoke=mode=="--smoke-ui" || recordsSmoke || workspaceSmoke || layersSmoke || acquisitionSmoke || navigationSmoke || boundarySmoke || colorbarSmoke || cflSmoke || modelDisplaySmoke || gridConfigSmoke;
+    const bool uiSmoke=mode=="--smoke-ui" || sourceSmoke || recordsSmoke || workspaceSmoke || layersSmoke || acquisitionSmoke || navigationSmoke || boundarySmoke || colorbarSmoke || cflSmoke || modelDisplaySmoke || gridConfigSmoke;
     const bool smoke=mode=="--smoke" || resizeSmoke || cudaSmoke || uiSmoke || commandSmoke || workflowCapture || routeSmoke;
     std::string catalogError;
     if(!validateCatalog3D(catalogError)){std::cerr<<catalogError<<'\n';return 1;}
@@ -1179,8 +1189,10 @@ int runWorkbench3D(int argc,char** argv) {
         if(colorbarSmoke){app.edited=applyModelPreset3D(0,app.edited);app.visuals.autoRange=true;}
         if(layersSmoke||modelDisplaySmoke){app.edited=applyMaterialPreset3D(1,app.edited);app.materialPreset=1;app.edited.nx=100;app.edited.ny=20;app.edited.nz=100;app.edited.spacing=1;app.edited.topographyAmplitude=2;app.edited.topographyWavelength=60;app.edited.maxSteps=40;app.visuals.displayMode=1;}
         if(modelDisplaySmoke){app.edited.maxSteps=0;app.edited.duration=.12;app.edited.dominantFrequency=30;app.edited.sourceZ=20;app.visuals.autoRange=true;app.visuals.showGrid=false;}
-        std::snprintf(app.vtsPath.data(),app.vtsPath.size(),"%s",utf8Path3D(outputRoot3D()/"curvilinear_snapshot.vts").c_str());
-        std::snprintf(app.csvPath.data(),app.csvPath.size(),"%s",utf8Path3D(outputRoot3D()/"receiver_traces.csv").c_str());
+        const auto sessionExportRoot=smoke?outputRoot3D()/"validation/three-d-smoke":outputRoot3D();
+        if(smoke)std::filesystem::create_directories(sessionExportRoot);
+        std::snprintf(app.vtsPath.data(),app.vtsPath.size(),"%s",utf8Path3D(sessionExportRoot/"curvilinear_snapshot.vts").c_str());
+        std::snprintf(app.csvPath.data(),app.csvPath.size(),"%s",utf8Path3D(sessionExportRoot/"receiver_traces.csv").c_str());
         if(!app.rebuild(true)||!app.renderer.initialize(executableDirectory3D(argv[0])/"shaders",app.error)){std::cerr<<app.error<<'\n';result=6;}
         if(result==0&&smoke&&!acquisitionSmoke&&!cudaSmoke&&app.simulation->backendInfo().kind!=defaultBackend3D()){std::cerr<<"Application default backend not selected\n";result=12;}
         if(result==0 && resizeSmoke && !app.verifyResizePolicy()){std::cerr<<app.error<<'\n';result=7;}
@@ -1244,7 +1256,7 @@ int runWorkbench3D(int argc,char** argv) {
         const auto rawFingerprint=[&]{std::uint64_t hash=1469598103934665603ULL;for(const auto& r:app.simulation->receivers())for(const auto* samples:{&r.samples,&r.samplesVx,&r.samplesVy})for(double v:*samples){hash^=std::bit_cast<std::uint64_t>(v);hash*=1099511628211ULL;}return hash;};
         const auto originalRaw=rawFingerprint();
         const double commandDt=app.simulation->dt();const auto commandParameters=app.simulation->parameters();const auto* commandCoordinates=app.simulation->grid().coordinates.data();
-        const auto reviewDirectory=outputRoot3D()/"validation/ui"/(gridConfigSmoke?"grid-config-review":modelDisplaySmoke?"model-display-review":cflSmoke?"cfl-review":colorbarSmoke?"colorbar-review":boundarySmoke?"boundary-review":navigationSmoke?"navigation-review":acquisitionSmoke?"acquisition-review":layersSmoke?"layers-review":workspaceSmoke?"workspace-review":recordsSmoke?"records-review":"ui-review");
+        const auto reviewDirectory=outputRoot3D()/"validation/ui"/(sourceSmoke?"source-review":gridConfigSmoke?"grid-config-review":modelDisplaySmoke?"model-display-review":cflSmoke?"cfl-review":colorbarSmoke?"colorbar-review":boundarySmoke?"boundary-review":navigationSmoke?"navigation-review":acquisitionSmoke?"acquisition-review":layersSmoke?"layers-review":workspaceSmoke?"workspace-review":recordsSmoke?"records-review":"ui-review");
         if(uiSmoke)std::filesystem::create_directories(reviewDirectory);
         if(result==0&&workflowCapture&&!captureWorkflow3D(app,window)){std::cerr<<app.error<<'\n';result=14;}
         while(result==0 && !workflowCapture && !glfwWindowShouldClose(window)) {
@@ -1259,6 +1271,7 @@ int runWorkbench3D(int argc,char** argv) {
                 app.theme=c.theme;applyTheme3D(c.theme);setLanguage3D(c.language);app.uiFontSize=c.font;
                 app.requestedTab=frame/10==11?4:(frame/10)%5;
                 if(gridConfigSmoke){const int index=frame/10;app.edited=applyModelPreset3D(4+index%3,app.simulation->parameters());app.requestedTab=index%2==0?1:0;app.shortcutHelp=index>=8;}
+                if(sourceSmoke){app.requestedTab=4;app.edited.source.kind=frame/10%2?SeisWave::SourceKind::IsotropicMoment:SeisWave::SourceKind::DirectionalForce;app.edited.source.direction=frame/10%3?std::array<double,3>{1,0,0}:std::array<double,3>{0,0,1};}
                 if(cflSmoke)app.requestedTab=0;
                 if(boundarySmoke){app.requestedTab=frame/10%3==2?2:8;app.visuals.showAbsorbingLayer=(frame/10)%2==0;app.visuals.displayMode=1;app.layoutPreset=1;app.resetLayout=true;app.groupsExpanded=true;++app.groupEpoch;}
                 if(colorbarSmoke){const int components[]{0,0,3,3,4,4,5,6,7,1,2,0};const int scalar=components[frame/10];app.requestedTab=frame/10==11?1:2;app.visuals.displayMode=scalar>=5?1:0;if(scalar>=5)app.visuals.modelComponent=scalar-5;else app.visuals.component=scalar;app.visuals.normalizedColorbar=(frame/10)%2==0;app.visuals.showGrid=false;app.layoutPreset=1;app.resetLayout=true;}

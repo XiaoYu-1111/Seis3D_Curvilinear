@@ -1,0 +1,8 @@
+numpy>=1.24
+pandas>=2
+matplotlib>=3.7,<4
+rasterio>=1.4.4,<2
+pyproj>=3.6,<4
+ipywidgets>=8,<9
+ipympl>=0.9,<1
+ipykernel>=6

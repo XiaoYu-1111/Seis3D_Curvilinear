@@ -2,6 +2,8 @@
 
 | 内容 | 入口 |
 | --- | --- |
+| 控制方程、交错/同位网格比较、曲网格映射、DRP/RK 与稳定性 | [曲网格波场理论整理](CURVILINEAR_WAVE_THEORY.md) |
+| 定向体力、各向同性爆炸源、单位与验证 | [震源机制](SOURCE_MECHANISMS.md) |
 | 二维外部高程格式、分层弹窗预设与大模型容量 | [外部高程与模型容量](SURFACE_PROFILES.md) |
 | 二维参数应用、共用记录显示与 SEG-Y 导入/分量导出 | [地震记录与 SEG-Y](SEGY_AND_RECORDS.md) |
 | 主页维度入口、二维 P–SV 原理及独立源码分组 | [二维与三维工作流](TWO_D_WORKFLOW.md) |

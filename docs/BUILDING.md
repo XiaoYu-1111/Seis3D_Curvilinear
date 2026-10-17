@@ -67,6 +67,8 @@ ImGui/ImPlot 源码及许可保存在 `third_party`；公共头文件通过目�
 
 程序从 EXE 同级 `shaders` 读取着色器，不依赖当前工作目录。DLL、着色器和许可在构建后复制到外层 bin。MSVC/Ninja 的中文头文件依赖探测逻辑保留在仓库 cmake 模块中。
 
+示例高程原件在 `resources/examples/elevation`；CMake 自动复制到 EXE 同级 `examples/elevation`。二维高程弹窗按 EXE 位置查找这些数据，不依赖原开发机源码路径。发送程序时也保留 `examples` 目录，其中 README 说明覆盖范围与推荐网格。
+
 ## 显卡检测与求解设备
 
 程序枚举 CUDA 可见的所有设备，逐卡读取设备编号、型号、计算能力、PCI 地址和显存，并在该设备上检查当前二进制的数值内核。第 0 块设备不可用时，仍继续检查后续设备；失败原因保留在列表中。Windows 同时通过 DXGI 列出硬件显示适配器，因而核显、AMD 显卡与 NVIDIA 显卡都能在信息区看到，CUDA 求解器只接受通过检查的 NVIDIA CUDA 设备。操作系统、驱动或环境变量隐藏的设备不会出现在 CUDA 可见列表。

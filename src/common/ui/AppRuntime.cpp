@@ -56,6 +56,20 @@ void setInterfaceFontSize(float size) {
 std::filesystem::path outputRoot() {
     return SEIS3D_OUTPUT_ROOT;
 }
+std::filesystem::path elevationExampleRoot() {
+#ifdef _WIN32
+    std::vector<wchar_t> name(32768);
+    const auto length = GetModuleFileNameW(nullptr, name.data(), static_cast<DWORD>(name.size()));
+    if (length && length < name.size())
+        return std::filesystem::path(name.data()).parent_path() / "examples/elevation";
+#else
+    std::error_code error;
+    const auto executable = std::filesystem::read_symlink("/proc/self/exe", error);
+    if (!error)
+        return executable.parent_path() / "examples/elevation";
+#endif
+    return std::filesystem::current_path() / "examples/elevation";
+}
 bool AppRuntime::open(const char *title, bool hidden, std::string &error) {
     if (!glfwInit()) {
         error = "GLFW initialization failed.";

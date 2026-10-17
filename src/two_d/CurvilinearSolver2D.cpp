@@ -37,6 +37,7 @@ struct Simulation::Impl {
     Grid grid;
     State fields[7];
     std::vector<double> lambda, mu, source, damping;
+    std::array<std::vector<double>, 2> sourceGradient;
     Point::Mesh mesh;
     std::vector<Receiver> receivers;
     BackendInfo3D backend;
@@ -56,7 +57,9 @@ struct Simulation::Impl {
             std::fill(f.begin(), f.end(), 0);
         const auto in = view(state), out = view(result);
         const auto m = mesh;
-        const double forcing = p.forcePerLength / (p.spacing * p.spacing) * pulse(time, p.frequency);
+        const double forcing =
+            (p.source.kind == SeisWave::SourceKind::IsotropicMoment ? p.momentPerLength : p.forcePerLength) /
+            (p.spacing * p.spacing) * pulse(time, p.frequency);
 #ifdef SEIS3D_HAS_OPENMP
 #pragma omp parallel for schedule(static) num_threads(threads) if (threads > 1 && p.nx * p.nz >= 16384)
 #endif
@@ -134,18 +137,28 @@ bool Simulation::initialize(const Parameters &p, std::string &error, BackendKind
         require(p.nx >= 8 && p.nz >= 8 && p.nx <= maxAxisNodes && p.nz <= maxAxisNodes,
                 "2D dimensions must be in 8..16384 (subject to RAM/VRAM).");
         for (double v : {p.spacing, p.relief, p.wavelength, p.flattenDepth, p.frequency, p.duration, p.cfl,
-                         p.forcePerLength, p.spongeStrength, p.surfaceDatum})
+                         p.forcePerLength, p.momentPerLength, p.spongeStrength, p.surfaceDatum})
             require(std::isfinite(v), "2D parameters must be finite.");
         require(p.spacing > 0 && p.frequency > 0 && p.frequency <= 1e6 && p.duration > 0 &&
                     p.duration <= 10 && p.cfl >= .02 && p.cfl <= .8 && p.wavelength > 0 &&
-                    p.flattenDepth >= 0 && p.forcePerLength > 0,
+                    p.flattenDepth >= 0 &&
+                    (p.source.kind == SeisWave::SourceKind::IsotropicMoment ? p.momentPerLength
+                                                                            : p.forcePerLength) > 0,
                 "Invalid 2D spacing, frequency, duration, CFL or source amplitude.");
         require(material(p.vp, p.vs, p.density),
                 "Require positive material values and positive elastic bulk modulus.");
         require(p.maxSteps >= 0 && p.maxSteps <= 20000 && settings.cpuThreads >= 0 &&
                     settings.cpuThreads <= 64,
                 "Step cap must be 0..20000; CPU workers must be 0..64.");
+        if (!SeisWave::validateSource(p.source, true, error))
+            throw std::runtime_error(error);
+        const bool explosive = p.source.kind == SeisWave::SourceKind::IsotropicMoment;
         const int sx = p.sourceX < 0 ? p.nx / 2 : p.sourceX;
+        if (explosive)
+            require(
+                p.nx >= 11 && p.nz >= 11 && sx >= 5 && sx <= p.nx - 6 && p.sourceZ >= 5 &&
+                    p.sourceZ <= p.nz - 6,
+                "Isotropic moment needs 11+ nodes per axis and source center five nodes inside each face.");
         require(p.sourceX >= -1 && sx >= 2 && sx <= p.nx - 3 && p.sourceZ >= 2 && p.sourceZ <= p.nz - 3,
                 "2D source must stay at least two cells inside the domain.");
         require(p.receiverStart >= 0 && p.receiverCount > 0 && p.receiverCount <= 1024 &&
@@ -170,14 +183,14 @@ bool Simulation::initialize(const Parameters &p, std::string &error, BackendKind
         require(available.available, available.description.c_str());
         const std::size_t count = static_cast<std::size_t>(p.nx + 6) * (p.nz + 6);
         const auto memory = Seis3D::Curvilinear::queryBackendMemory3D(kind, available.cudaDevice);
-        const double bytes = count * 60.0 * sizeof(double) + static_cast<double>(p.receiverCount) *
-                                                                 (p.maxSteps ? p.maxSteps + 1 : 20001) * 2 *
-                                                                 sizeof(double);
+        const double bytes =
+            count * (60.0 + (explosive ? 2 : 0)) * sizeof(double) +
+            static_cast<double>(p.receiverCount) * (p.maxSteps ? p.maxSteps + 1 : 20001) * 2 * sizeof(double);
         require(!memory.hostAvailableBytes || bytes < memory.hostAvailableBytes * .8,
                 "Insufficient RAM for a transactional 2D rebuild.");
         if (kind == BackendKind3D::Cuda)
-            require(memory.deviceAvailableBytes &&
-                        count * 48.0 * sizeof(double) < memory.deviceAvailableBytes * .85,
+            require(memory.deviceAvailableBytes && count * (48.0 + (explosive ? 2 : 0)) * sizeof(double) <
+                                                       memory.deviceAvailableBytes * .85,
                     "Insufficient VRAM for the 2D session.");
         auto next = std::make_unique<Impl>();
         auto &s = *next;
@@ -303,6 +316,23 @@ bool Simulation::initialize(const Parameters &p, std::string &error, BackendKind
             }
         for (double &v : s.source)
             v /= weight;
+        if (explosive) {
+            for (auto &v : s.sourceGradient)
+                v.assign(count, 0);
+            const auto flux = [&](std::ptrdiff_t q, int axis, int component) {
+                const double metric =
+                    axis == 0 ? (component == 0 ? 1. : 0.) : (component == 0 ? g.metricA[q] : g.metricB[q]);
+                return g.jacobian[q] * metric * s.source[q];
+            };
+            for (int k = p.sourceZ - 4; k <= p.sourceZ + 4; ++k)
+                for (int i = sx - 4; i <= sx + 4; ++i) {
+                    const auto q = g.index(i + ghost, k + ghost);
+                    const auto force =
+                        SeisWave::isotropicMomentPattern(q, 2, {1, g.nx, 0}, p.spacing, g.jacobian[q], flux);
+                    for (int a = 0; a < 2; ++a)
+                        s.sourceGradient[a][q] = force[a];
+                }
+        }
         auto &d = s.diagnostics;
         d.ppw = minVs / (2.5 * p.frequency * g.maxEdge);
         d.waveDt = p.cfl * p.spacing / (maxVp * g.maxMetric);
@@ -339,6 +369,12 @@ bool Simulation::initialize(const Parameters &p, std::string &error, BackendKind
                   g.density.data(),
                   s.source.data(),
                   s.damping.data()};
+        const auto direction = SeisWave::unitSourceDirection(p.source);
+        for (int a = 0; a < 3; ++a)
+            s.mesh.sourceDirection[a] = direction[a];
+        if (explosive)
+            for (int a = 0; a < 2; ++a)
+                s.mesh.sourceGradient[a] = s.sourceGradient[a].data();
 #ifdef SEIS3D_HAS_CUDA
         if (kind == BackendKind3D::Cuda)
             s.cuda = std::make_unique<CudaEngine>(s.mesh, s.receivers, available.cudaDevice);
@@ -374,7 +410,10 @@ bool Simulation::advance(int count, std::string &error) {
 #ifdef SEIS3D_HAS_CUDA
             if (s.cuda)
                 s.cuda->step(s.step * s.dt, s.dt, s.p.frequency,
-                             s.p.forcePerLength / (s.p.spacing * s.p.spacing), s.step);
+                             (s.p.source.kind == SeisWave::SourceKind::IsotropicMoment ? s.p.momentPerLength
+                                                                                       : s.p.forcePerLength) /
+                                 (s.p.spacing * s.p.spacing),
+                             s.step);
             else
 #endif
             {
@@ -524,8 +563,23 @@ bool writeSnapshot(const Simulation &s, const std::filesystem::path &path, std::
         out << std::setprecision(17)
             << "<?xml version=\"1.0\"?>\n<VTKFile type=\"StructuredGrid\" version=\"0.1\" "
                "byte_order=\"LittleEndian\"><StructuredGrid WholeExtent=\"0 "
-            << p.nx - 1 << " 0 0 0 " << p.nz - 1 << "\"><Piece Extent=\"0 " << p.nx - 1 << " 0 0 0 "
-            << p.nz - 1 << "\"><PointData>\n";
+            << p.nx - 1 << " 0 0 0 " << p.nz - 1 << "\">\n";
+        const auto direction = SeisWave::unitSourceDirection(p.source);
+        out << "<FieldData>";
+        const auto scalar = [&](const char *name, double value) {
+            out << "<DataArray type=\"Float64\" Name=\"" << name
+                << "\" NumberOfTuples=\"1\" format=\"ascii\">" << value << "</DataArray>";
+        };
+        scalar("SourceKind", static_cast<int>(p.source.kind));
+        scalar("SourceForcePerLengthNPerM", p.forcePerLength);
+        scalar("SourceMomentPerLengthN", p.momentPerLength);
+        scalar("SourceFrequencyHz", p.frequency);
+        scalar("SourceDirectionX", direction[0]);
+        scalar("SourceDirectionZ", direction[2]);
+        scalar("SimulationDt", s.dt());
+        scalar("SimulationStep", s.step());
+        scalar("TIME_VALUE", s.step() * s.dt());
+        out << "</FieldData><Piece Extent=\"0 " << p.nx - 1 << " 0 0 0 " << p.nz - 1 << "\"><PointData>\n";
         const char *names[]{"Vx", "Vz", "Sxx", "Szz", "Sxz", "Vp", "Vs", "Density"};
         for (int f = 0; f < 8; ++f) {
             out << "<DataArray type=\"Float64\" Name=\"" << names[f] << "\" format=\"ascii\">\n";
@@ -563,7 +617,14 @@ bool writeReceivers(const Simulation &s, const std::filesystem::path &path, std:
             throw std::runtime_error("Cannot create 2D receiver CSV.");
         out << std::setprecision(17)
             << "# P-SV plane strain; x,z in m; velocity in m/s; t=0 included\n# dt=" << s.dt()
-            << "\n# backend=" << s.backend().deviceName << "\nreceiver,x_m,z_m,time_s,vx_m_s,vz_m_s\n";
+            << "\n# backend=" << s.backend().deviceName;
+        const auto &p = s.parameters();
+        const auto direction = SeisWave::unitSourceDirection(p.source);
+        out << "\n# source_kind=" << static_cast<int>(p.source.kind)
+            << " (0=directional_force,1=isotropic_moment); force_per_length_N_per_m=" << p.forcePerLength
+            << "; diagonal_moment_per_length_N=" << p.momentPerLength << "; direction_XZ=" << direction[0]
+            << ',' << direction[2] << "; Ricker_f0_Hz=" << p.frequency
+            << "\nreceiver,x_m,z_m,time_s,vx_m_s,vz_m_s\n";
         int id = 0;
         for (const auto &r : s.receivers()) {
             for (std::size_t t = 0; t < r.vx.size(); ++t)

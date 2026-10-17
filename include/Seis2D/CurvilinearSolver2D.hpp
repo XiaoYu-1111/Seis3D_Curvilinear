@@ -1,6 +1,7 @@
 #pragma once
 #include "SeisCommon/ComputeDevices.hpp"
 #include "SurfaceProfile.hpp"
+#include "SeisCommon/SourceMechanism.hpp"
 #include <array>
 #include <filesystem>
 #include <memory>
@@ -21,6 +22,8 @@ struct Parameters {
     double relief{10}, wavelength{400}, flattenDepth{}, frequency{30}, duration{1}, cfl{.8},
         forcePerLength{2e5};
     int sourceX{-1}, sourceZ{40}, maxSteps{5000};
+    SeisWave::SourceMechanism source;
+    double momentPerLength{2e6}; // Isotropic moment per unit Y length, N (= N*m/m).
     bool absorbing{true};
     int spongeX{16}, spongeZ{16};
     double spongeStrength{3};

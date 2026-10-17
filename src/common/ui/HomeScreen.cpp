@@ -283,8 +283,7 @@ Route runHomeScreen(bool smoke, int choice) {
                            "CPU / OpenMP  +  CUDA  |  %d %s", usable,
                            l("usable CUDA devices", "个可用 CUDA 设备"));
         ImGui::TextWrapped(
-            "%s", l("Return Home to change dimension. Re-entering starts a fresh model and record session.",
-                    "返回主页可切换维度；重新进入会建立新的模型与记录会话。"));
+            "%s", "XIAO YU  |  C++20 / CUDA / OpenMP / OpenGL / GLFW / Dear ImGui / ImPlot / CMake");
         const ImVec2 flowSize{ImGui::GetContentRegionAvail().x, compact ? 32.f : 58.f};
         flowingWave(ImGui::GetWindowDrawList(), ImGui::GetCursorScreenPos(), flowSize,
                     animate ? (smoke ? frame * .04 : ImGui::GetTime()) : 0);

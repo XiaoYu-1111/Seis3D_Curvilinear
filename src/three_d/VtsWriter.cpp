@@ -24,6 +24,7 @@ bool writeVts(const SimulationResult& result, const std::filesystem::path& path,
     std::ofstream out(path, std::ios::binary);
     if (!out) { error = "Could not open VTS output file: " + path.string(); return false; }
     out << std::setprecision(9);
+    const auto direction=SeisWave::unitSourceDirection(result.sourceMechanism);
     out << "<?xml version=\"1.0\"?>\n"
         << "<VTKFile type=\"StructuredGrid\" version=\"1.0\" byte_order=\"LittleEndian\">\n"
         << "  <StructuredGrid WholeExtent=\"0 " << nx-1 << " 0 " << ny-1 << " 0 " << nz-1 << "\">\n"
@@ -33,6 +34,13 @@ bool writeVts(const SimulationResult& result, const std::filesystem::path& path,
         << "<DataArray type=\"Float64\" Name=\"SourceX\" NumberOfTuples=\"1\" format=\"ascii\">" << result.sourcePosition[0] << "</DataArray>"
         << "<DataArray type=\"Float64\" Name=\"SourceY\" NumberOfTuples=\"1\" format=\"ascii\">" << result.sourcePosition[1] << "</DataArray>"
         << "<DataArray type=\"Float64\" Name=\"SourceZ\" NumberOfTuples=\"1\" format=\"ascii\">" << result.sourcePosition[2] << "</DataArray>"
+        << "<DataArray type=\"Int32\" Name=\"SourceKind\" NumberOfTuples=\"1\" format=\"ascii\">" << static_cast<int>(result.sourceMechanism.kind) << "</DataArray>"
+        << "<DataArray type=\"Float64\" Name=\"SourceForceN\" NumberOfTuples=\"1\" format=\"ascii\">" << result.sourceForce << "</DataArray>"
+        << "<DataArray type=\"Float64\" Name=\"SourceMomentNm\" NumberOfTuples=\"1\" format=\"ascii\">" << result.sourceMoment << "</DataArray>"
+        << "<DataArray type=\"Float64\" Name=\"SourceFrequencyHz\" NumberOfTuples=\"1\" format=\"ascii\">" << result.sourceFrequency << "</DataArray>"
+        << "<DataArray type=\"Float64\" Name=\"SourceDirectionX\" NumberOfTuples=\"1\" format=\"ascii\">" << direction[0] << "</DataArray>"
+        << "<DataArray type=\"Float64\" Name=\"SourceDirectionY\" NumberOfTuples=\"1\" format=\"ascii\">" << direction[1] << "</DataArray>"
+        << "<DataArray type=\"Float64\" Name=\"SourceDirectionZ\" NumberOfTuples=\"1\" format=\"ascii\">" << direction[2] << "</DataArray>"
         << "<DataArray type=\"Float64\" Name=\"GridSpacing\" NumberOfTuples=\"1\" format=\"ascii\">" << grid.dx << "</DataArray>"
         << "<DataArray type=\"Float64\" Name=\"TerrainTransitionDepth\" NumberOfTuples=\"1\" format=\"ascii\">" << grid.terrainTransitionDepth << "</DataArray></FieldData>\n"
         << "    <Piece Extent=\"0 " << nx-1 << " 0 " << ny-1 << " 0 " << nz-1 << "\">\n"

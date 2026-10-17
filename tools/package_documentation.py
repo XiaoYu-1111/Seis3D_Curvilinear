@@ -17,7 +17,7 @@ SHOTS = ROOT / 'docs/images'
 DOCS = OUTPUT / 'documentation/Seis3D_Curvilinear'
 BLOG = OUTPUT / 'blog/Seis3D_Curvilinear'
 TOKEN = re.compile(r'(!?)\[([^\]]*)\]\(([^)]+)\)')
-TITLE = 'SeisWave Lab：曲网格三维弹性波模拟的理论、实现与应用'
+TITLE = 'SeisWave Lab：曲网格二维与三维弹性波模拟的理论、实现与应用'
 
 def digest(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
@@ -80,6 +80,10 @@ def main():
                 name=resolved.name
                 if not (DOCS/'images'/name).is_file(): shutil.copy2(resolved,DOCS/'images'/name)
                 dest='images/'+name
+            elif resolved.suffix.lower()=='.csv' and resolved.is_relative_to(ROOT/'resources/examples/elevation'):
+                dest='examples/elevation/'+resolved.name
+                (DOCS/'examples/elevation').mkdir(parents=True,exist_ok=True)
+                shutil.copy2(resolved,DOCS/dest)
             else:
                 raise ValueError(f'Academic article must be self-contained: {target}')
             if anchor: dest+='#'+anchor
@@ -101,6 +105,12 @@ def main():
     (DOCS/'README.md').write_text('# SeisWave Lab 图文说明\n\n[完整说明](PROJECT_MANUAL.md) 按背景、原理、实现过程、界面介绍和附录组织，包含数学推导、算例条件、数据定义与参考文献。[界面与模拟过程图集](SCREENSHOT_GALLERY.md) 收录18张完整界面图，正文另有内点频散分析图，图像均在 images 目录。\n\n本文区分数学模型、当前实现和已有证据范围，不以运行完成或后端一致代替物理精度验证。普通 Markdown 阅读器需启用数学公式渲染。软件许可和来源见随附 LICENSE 与 THIRD_PARTY_NOTICES.md。\n',encoding='utf-8')
 
     doc_files=['PROJECT_MANUAL.md','SCREENSHOT_GALLERY.md','README.md','LICENSE','THIRD_PARTY_NOTICES.md']
+    for resource in sorted((ROOT/'resources/examples/elevation').iterdir()):
+        if resource.suffix.lower() not in {'.csv','.md'}: continue
+        relative='examples/elevation/'+resource.name
+        (DOCS/'examples/elevation').mkdir(parents=True,exist_ok=True)
+        shutil.copy2(resource,DOCS/relative)
+        doc_files.append(relative)
     doc_files += ['images/'+row['png'] for row in rows]+['images/dispersion-comparison.png']
     # Additional published UI images (e.g. the 2D/3D home screen) are not part
     # of the original 18-shot 3D numerical capture series or its metadata.

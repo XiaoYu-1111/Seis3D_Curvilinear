@@ -88,6 +88,7 @@ __global__ void frameKernel(Point::Fields w, Point::Mesh g, int component, float
 struct CudaEngine::Impl {
     int device{}, blocks{};
     Point::Mesh mesh;
+    DeviceBuffer sourceGradient[2];
     DeviceBuffer fields[7], a, b, jac, normals, lambda, mu, rho, source, damping, stats, receiverIndices,
         receiverSamples, display;
     std::vector<Stats> hostStats;
@@ -138,6 +139,11 @@ CudaEngine::CudaEngine(const Point::Mesh &mesh, const std::vector<Receiver> &rec
     s.mesh.rho = s.rho.doubles();
     s.source.upload(mesh.source, mesh.count * sizeof(double));
     s.mesh.source = s.source.doubles();
+    for (int a = 0; a < 2; ++a)
+        if (mesh.sourceGradient[a]) {
+            s.sourceGradient[a].upload(mesh.sourceGradient[a], mesh.count * sizeof(double));
+            s.mesh.sourceGradient[a] = s.sourceGradient[a].doubles();
+        }
     s.damping.upload(mesh.damping, mesh.count * sizeof(double));
     s.mesh.damping = s.damping.doubles();
     s.stats.allocate(s.blocks * sizeof(Stats));

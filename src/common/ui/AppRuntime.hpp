@@ -5,6 +5,7 @@ struct GLFWwindow;
 namespace SeisWave::Ui {
 inline constexpr int returnHome = 100;
 std::filesystem::path outputRoot();
+std::filesystem::path elevationExampleRoot();
 float interfaceFontSize();
 void setInterfaceFontSize(float);
 void saveAppearancePreferences();

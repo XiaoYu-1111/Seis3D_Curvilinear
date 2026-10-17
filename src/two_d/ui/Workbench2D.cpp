@@ -4,6 +4,7 @@
 #include "RecordPalettes3D.hpp"
 #include "RecordView.hpp"
 #include "SeisCommon/SegyIo.hpp"
+#include "SourceControls.hpp"
 #ifdef _WIN32
 // clang-format off
 #include <windows.h>
@@ -23,9 +24,19 @@
 #include <fstream>
 #include <iostream>
 #include <numeric>
+#include <string_view>
 namespace Seis2D::Curvilinear::Ui {
 using namespace Seis3D::Curvilinear::Ui;
 namespace {
+struct ElevationExample {
+    const char *file, *en, *zh;
+};
+constexpr ElevationExample elevationExamples[]{
+    {"flat_2km.csv", "Flat surface / 2 km", "平地 / 2 km"},
+    {"ridge_2km.csv", "Smooth ridge / 2 km", "平滑丘陵 / 2 km"},
+    {"irregular_2km.csv", "Irregular samples / 2 km", "不等距采样 / 2 km"},
+    {"valley_20km.csv", "Wide valley / 20 km", "宽域山谷 / 20 km"},
+    {"hill_valley_1km.csv", "Hill + valley (+/-100 m) / 1 km", "山丘 + 沟谷（±100 m）/ 1 km"}};
 const char *l(const char *en, const char *zh) {
     return language3D() ? zh : en;
 }
@@ -55,7 +66,10 @@ void quad(ImDrawList *draw, const ImVec2 *points, const ImU32 *colors) {
 }
 void fitAcquisition(Parameters &p) {
     p.sourceX = p.sourceX < 0 ? -1 : std::clamp(p.sourceX, 2, std::max(2, p.nx - 3));
-    p.sourceZ = std::clamp(p.sourceZ, 2, std::max(2, p.nz - 3));
+    const int margin =
+        p.source.kind == SeisWave::SourceKind::IsotropicMoment && p.nx >= 11 && p.nz >= 11 ? 5 : 2;
+    p.sourceX = p.sourceX < 0 ? -1 : std::clamp(p.sourceX, margin, std::max(margin, p.nx - 1 - margin));
+    p.sourceZ = std::clamp(p.sourceZ, margin, std::max(margin, p.nz - 1 - margin));
     p.receiverStart = std::clamp(p.receiverStart, 0, std::max(0, p.nx - 1));
     p.receiverDepth = std::clamp(p.receiverDepth, 0, std::max(0, p.nz - 1));
     p.receiverStride = std::max(1, p.receiverStride);
@@ -87,7 +101,7 @@ struct Workbench {
     bool useImported{}, ieee64{};
     std::array<bool, 3> exportComponents{true, false, false};
     std::uint64_t recordGeneration{1}, importedRevision{1};
-    ImRect rebuildRect, frequencyRect;
+    ImRect rebuildRect, frequencyRect, sourceKindRect, sourceMomentRect;
     int lastHeight{};
     Seis3D::Curvilinear::CudaDeviceInventory3D inventory;
     ImRect homeRect;
@@ -498,6 +512,20 @@ struct Workbench {
                                        "CSV/TXT 两列：x_m, elevation_m（高程向上为正），可有表头；X "
                                        "必须严格递增。采用保形三次 Hermite 插值。"));
             ImGui::SetNextItemWidth(-1);
+            if (ImGui::BeginCombo("##terrainExample", l("Choose an elevation example…", "选择示例高程…"))) {
+                for (const auto &example : elevationExamples)
+                    if (ImGui::Selectable(l(example.en, example.zh))) {
+                        const auto path = (SeisWave::Ui::elevationExampleRoot() / example.file).u8string();
+                        if (path.size() < surfacePath.size()) {
+                            std::snprintf(surfacePath.data(), surfacePath.size(), "%s",
+                                          reinterpret_cast<const char *>(path.c_str()));
+                            loadTerrain();
+                        } else
+                            error = l("Example path is too long.", "示例路径过长。");
+                    }
+                ImGui::EndCombo();
+            }
+            ImGui::SetNextItemWidth(-1);
             ImGui::InputText("##surfacePath", surfacePath.data(), surfacePath.size());
             if (button("Browse terrain", "选择高程文件", FunctionRole3D::Model))
                 browse(surfacePath, false, true);
@@ -623,8 +651,12 @@ struct Workbench {
                                    (staged.nx - 1) * staged.spacing, (staged.nz - 1) * staged.spacing);
                 const double nodes = (static_cast<double>(std::max(0, staged.nx)) + 6) *
                                      (static_cast<double>(std::max(0, staged.nz)) + 6);
-                ImGui::TextWrapped("%s %.0f MiB | GPU %.0f MiB", l("Grid estimate: RAM", "网格预算：内存"),
-                                   nodes * 480 / (1024 * 1024), nodes * 384 / (1024 * 1024));
+                ImGui::TextWrapped(
+                    "%s %.0f MiB | GPU %.0f MiB", l("Grid estimate: RAM", "网格预算：内存"),
+                    nodes * (480 + (staged.source.kind == SeisWave::SourceKind::IsotropicMoment ? 16 : 0)) /
+                        (1024 * 1024),
+                    nodes * (384 + (staged.source.kind == SeisWave::SourceKind::IsotropicMoment ? 16 : 0)) /
+                        (1024 * 1024));
                 ImGui::TextWrapped("%s", l("Limits also depend on available RAM/VRAM; rebuilding keeps the "
                                            "old session until success.",
                                            "实际容量取决于可用内存/显存，重建成功前保留原会话。"));
@@ -683,7 +715,9 @@ struct Workbench {
                     staged.sourceZ = source[1];
                 }
                 input("Dominant frequency (Hz)", "激发主频（Hz）", staged.frequency);
-                input("Force per Y length (N/m)", "单位 Y 长度力幅值（N/m）", staged.forcePerLength, 10000);
+                if (SeisWave::Ui::sourceControls(staged.source, staged.forcePerLength, staged.momentPerLength,
+                                                 true, &sourceKindRect, &sourceMomentRect))
+                    fitAcquisition(staged);
             }
             if (ImGui::CollapsingHeader(l("Receiver line", "接收测线"), 0)) {
 
@@ -898,7 +932,8 @@ struct Workbench {
                         (p.nz - 1) * p.spacing, p.nx, p.nz, p.frequency);
         const float plotHeight =
             std::max(80.f, ImGui::GetContentRegionAvail().y -
-                               (compactPlot ? ImGui::GetFontSize() + 28 : ImGui::GetFontSize() * 2 + 65));
+                               (compactPlot ? ImGui::GetFontSize() + 28 : ImGui::GetFontSize() * 2 + 65) -
+                               (grid ? ImGui::GetFontSize() + ImGui::GetStyle().ItemSpacing.y : 0));
         if (fit)
             ImPlot::SetNextAxesToFit();
         if (ImPlot::BeginPlot("##curved2D", {-1, plotHeight}, ImPlotFlags_NoLegend | ImPlotFlags_Equal)) {
@@ -1378,6 +1413,63 @@ int runWorkbench2D(bool smoke, bool homeTest) {
                 glfwSetWindowSize(runtime.window(), 1600, 1000);
                 SeisWave::Ui::setInterfaceFontSize(24);
             }
+            if (frame == 118) {
+                app.category = 1;
+                app.staged.nx = app.staged.nz = 200;
+                app.staged.spacing = 2.5;
+                app.staged.frequency = 30;
+                app.staged.relief = 5;
+                app.staged.duration = .1;
+                app.staged.maxSteps = 0;
+                fitAcquisition(app.staged);
+                if (!app.apply())
+                    throw std::runtime_error(app.error);
+            }
+            if (frame == 120) {
+                const auto at = app.sourceKindRect.GetCenter();
+                io.AddMousePosEvent(at.x, at.y);
+                io.AddMouseButtonEvent(0, true);
+            }
+            if (frame == 121)
+                io.AddMouseButtonEvent(0, false);
+            if (frame == 123) {
+                if (app.sourceMomentRect.GetWidth() <= 0)
+                    throw std::runtime_error("Source mechanism popup did not open");
+                const auto at = app.sourceMomentRect.GetCenter();
+                io.AddMousePosEvent(at.x, at.y);
+                io.AddMouseButtonEvent(0, true);
+            }
+            if (frame == 124)
+                io.AddMouseButtonEvent(0, false);
+            if (frame == 128 && app.staged.source.kind != SeisWave::SourceKind::IsotropicMoment)
+                throw std::runtime_error("Source combo did not switch to isotropic moment");
+            if (frame == 129) {
+                const auto at = app.rebuildRect.GetCenter();
+                io.AddMousePosEvent(at.x, at.y);
+                io.AddMouseButtonEvent(0, true);
+            }
+            if (frame == 130)
+                io.AddMouseButtonEvent(0, false);
+            if (frame == 132) {
+                if (app.simulation.parameters().source.kind != SeisWave::SourceKind::IsotropicMoment ||
+                    !app.simulation.advance(app.simulation.totalSteps(), app.error))
+                    throw std::runtime_error("Source type did not apply / propagate");
+            }
+            if (frame == 136) {
+                for (const auto &example : elevationExamples) {
+                    if (std::string_view(example.file) == "hill_valley_1km.csv") {
+                        app.staged.nx = app.staged.nz = 401;
+                        app.staged.spacing = 2.5;
+                        app.staged.flattenDepth = 0;
+                    }
+                    const auto path = (SeisWave::Ui::elevationExampleRoot() / example.file).u8string();
+                    std::snprintf(app.surfacePath.data(), app.surfacePath.size(), "%s",
+                                  reinterpret_cast<const char *>(path.c_str()));
+                    if (!app.loadTerrain() || !app.apply() || !app.simulation.advance(1, app.error))
+                        throw std::runtime_error(app.error);
+                }
+                app.openTerrain = true;
+            }
             if (frame == 112) {
                 app.staged.nx = 1200;
                 app.staged.nz = 1100;
@@ -1465,7 +1557,19 @@ int runWorkbench2D(bool smoke, bool homeTest) {
                 app.simulation.parameters().nx != 1200 || app.simulation.parameters().nz != 1100)
                 throw std::runtime_error("Large 2D view sampling / bounds failed");
             std::cout << "2D large model UI PASS: 1200x1100, full simulation / adaptive view stride\n";
-            return 0;
+        }
+        if (smoke && !homeTest && (frame == 134 || frame == 140)) {
+            int w, h;
+            glfwGetFramebufferSize(runtime.window(), &w, &h);
+            SeisWave::Ui::capture(SeisWave::Ui::outputRoot() /
+                                      (frame == 134 ? "screenshots/two-d/source-explosion.ppm"
+                                                    : "screenshots/two-d/elevation-examples.ppm"),
+                                  w, h);
+            if (frame == 140) {
+                std::cout << "2D source / examples UI PASS: actual mechanism combo and rebuild, explosion "
+                             "propagation, all deployed elevation files\n";
+                return 0;
+            }
         }
         if (smoke && !homeTest && frame % 10 == 7 && frame <= 57) {
             int width, height;

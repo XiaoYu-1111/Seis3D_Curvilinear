@@ -13,6 +13,8 @@ struct Mesh {
     std::size_t count{};
     double h{};
     const double *a{}, *b{}, *jac{}, *normals{}, *lambda{}, *mu{}, *rho{}, *source{}, *damping{};
+    double sourceDirection[3]{0, 0, 1};
+    const double *sourceGradient[2]{};
 };
 struct Fields {
     double *f[5]{};
@@ -100,7 +102,11 @@ SEIS_2D_HD void rhs(const Fields &w, Fields out, const Mesh &g, std::size_t q, d
     if (depth <= (dirs[1] ? 3 : 1))
         for (int v = 0; v < 2; ++v)
             out.f[v][q] = momentum(w, g, q, v, dirs, depth);
-    out.f[1][q] += forcing * g.source[q] / g.rho[q];
+    for (int v = 0; v < 2; ++v)
+        out.f[v][q] +=
+            forcing *
+            (g.sourceGradient[v] ? g.sourceGradient[v][q] : g.source[q] * g.sourceDirection[v == 0 ? 0 : 2]) /
+            g.rho[q];
     const double lambda = g.lambda[q], mu = g.mu[q], div = dx[0] + dz[1];
     out.f[2][q] = lambda * div + 2 * mu * dx[0];
     out.f[3][q] = lambda * div + 2 * mu * dz[1];

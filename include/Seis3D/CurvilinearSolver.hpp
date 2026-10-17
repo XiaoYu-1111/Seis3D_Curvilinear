@@ -1,6 +1,7 @@
 #pragma once
 #include "Seis3D/KernelTypes3D.hpp"
 #include "SeisCommon/ComputeDevices.hpp"
+#include "SeisCommon/SourceMechanism.hpp"
 
 #include <array>
 #include <cstddef>
@@ -73,6 +74,8 @@ struct SimulationParameters {
     std::vector<MaterialLayer3D> layers;
     double dominantFrequency{12.0};
     int sourceX{-1},sourceY{-1},sourceZ{3}; // Physical node indices, zero-based; -1 centers X/Y.
+    SeisWave::SourceMechanism source;
+    double sourceForce{2e8},sourceMoment{2e9}; // N (force), N*m (each diagonal isotropic moment component).
     double duration{1.0};
     int maxSteps{5000}; // Stop at duration OR cap, whichever first; 0 = duration only. Never changes CFL dt.
     double cflSafety{defaultCflCoefficient3D}; // DRP coefficient in dt=C*min(h/M,Lmin)/Vp; validated range 0.02..0.8.
@@ -147,6 +150,8 @@ struct SimulationResult {
     bool allFinite{};
     Diagnostics3D diagnostics;
     BackendInfo3D computeBackend;
+    SeisWave::SourceMechanism sourceMechanism;
+    double sourceForce{},sourceMoment{},sourceFrequency{};
 };
 
 // Backend boundary: rendering requests three compact host slices; a full-volume snapshot is an explicit export operation.

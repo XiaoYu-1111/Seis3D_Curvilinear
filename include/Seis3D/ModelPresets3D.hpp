@@ -25,6 +25,7 @@ inline SimulationParameters applyModelPreset3D(int index,const SimulationParamet
     if(index==0) {
         // Complete, reproducible case from the raw-field comparison figure.
         next.vp=3000;next.vs=1700;next.density=2200;next.layeredMaterial=false;next.layers.clear();next.layerDepthMode=LayerDepthMode3D::GridIndex;
+        next.source={};next.sourceForce=2e8;next.sourceMoment=2e9;
         next.dominantFrequency=12;next.sourceX=100;next.sourceY=10;next.sourceZ=50;
         next.duration=.5;next.maxSteps=5000;next.cflSafety=defaultCflCoefficient3D;
         next.receiverArray=ReceiverArraySettings3D{};
@@ -39,9 +40,9 @@ inline ModelMemory3D estimateModelMemory3D(const SimulationParameters& p) {
     result.points=static_cast<std::size_t>(p.nx+2*ghostWidth3D)*(p.ny+2*ghostWidth3D)*(p.nz+2*ghostWidth3D);
     std::vector<std::array<int,3>> receivers;std::string error;if(!receiverNodes3D(p,receivers,error))return result;
     const double receiverBytes=receivers.size()*3.0*(p.maxSteps>0?p.maxSteps+1.0:20001.0)*sizeof(double);
-    result.cpuMiB=(result.points*(p.layeredMaterial?84.0:81.0)*sizeof(double)+receiverBytes)/(1024*1024);
-    result.cudaHostMiB=(result.points*(p.layeredMaterial?21.0:18.0)*sizeof(double)+receiverBytes+(result.points+127)/128*72.0)/(1024*1024);
-    result.deviceMiB=(result.points*(p.layeredMaterial?81.0:78.0)*sizeof(double)+(result.points+127)/128*72.0)/(1024*1024);
+    result.cpuMiB=(result.points*((p.layeredMaterial?84.0:81.0)+(p.source.kind==SeisWave::SourceKind::IsotropicMoment?3:0))*sizeof(double)+receiverBytes)/(1024*1024);
+    result.cudaHostMiB=(result.points*((p.layeredMaterial?21.0:18.0)+(p.source.kind==SeisWave::SourceKind::IsotropicMoment?3:0))*sizeof(double)+receiverBytes+(result.points+127)/128*72.0)/(1024*1024);
+    result.deviceMiB=(result.points*((p.layeredMaterial?81.0:78.0)+(p.source.kind==SeisWave::SourceKind::IsotropicMoment?3:0))*sizeof(double)+(result.points+127)/128*72.0)/(1024*1024);
     result.withinBudget=result.points<=maxPaddedNodes3D;return result;
 }
 inline bool fitsMemory3D(const ModelMemory3D& m,BackendKind3D kind,const BackendMemory3D& available) {
@@ -54,10 +55,12 @@ inline bool fitsMemory3D(const ModelMemory3D& m,BackendKind3D kind,const Backend
 inline SimulationParameters resizeModel3D(const SimulationParameters& current,std::array<int,3> dims) {
     auto p=current;
     const int old[3]{current.nx,current.ny,current.nz};
-    for(int& count:dims)count=std::clamp(count,8,maxPhysicalNodesPerAxis3D);
+    const int minimum=current.source.kind==SeisWave::SourceKind::IsotropicMoment?11:8;
+    for(int& count:dims)count=std::clamp(count,minimum,maxPhysicalNodesPerAxis3D);
     p.nx=dims[0];p.ny=dims[1];p.nz=dims[2];
     const auto remap=[&](int value,int axis,int margin){if(value<0)return -1;if(value>=margin&&value<=dims[axis]-1-margin)return value;const double relative=old[axis]>1?double(value)/(old[axis]-1):.5;return std::clamp(int(std::lround(std::clamp(relative,0.0,1.0)*(dims[axis]-1))),margin,dims[axis]-1-margin);};
-    p.sourceX=remap(current.sourceX,0,2);p.sourceY=remap(current.sourceY,1,2);p.sourceZ=remap(current.sourceZ,2,2);
+    const int margin=current.source.kind==SeisWave::SourceKind::IsotropicMoment?5:2;
+    p.sourceX=remap(current.sourceX,0,margin);p.sourceY=remap(current.sourceY,1,margin);p.sourceZ=remap(current.sourceZ,2,margin);
     auto& r=p.receiverArray;r.z=remap(r.z,2,0);
     if(r.kind!=ReceiverArrayKind3D::AutoXLine) {
         r.startX=remap(r.startX,0,0);r.startY=remap(r.startY,1,0);r.strideX=std::max(1,r.strideX);r.strideY=std::max(1,r.strideY);

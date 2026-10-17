@@ -67,6 +67,7 @@ __global__ void sliceKernel(Point::Fields w,Point::Mesh g,DisplayRequest3D reque
 }
 struct CudaEngine3D::Impl {
     Point::Mesh mesh;
+    DeviceBuffer sourceGradient[3];
     DeviceBuffer fields[7],metrics,normals,jacobian,source,damping,materialLambda,materialMu,materialDensity,statsBuffer,receiverIndices,receiverValues,sliceBuffer;
     Point::Fields state,base,k1,k2,k3,k4,stage;
     std::vector<Stats> hostStats;
@@ -79,13 +80,17 @@ struct CudaEngine3D::Impl {
 CudaEngine3D::CudaEngine3D(const Point::Mesh& mesh,const std::vector<ReceiverTrace3D>& receivers,int device):impl_(std::make_unique<Impl>()) {
     auto& s=*impl_;s.device=device;DeviceScope scope(device);s.mesh=mesh;
     std::size_t freeBytes=0,totalBytes=0;checked(cudaMemGetInfo(&freeBytes,&totalBytes),"memory query");
-    const double required=mesh.count*(mesh.materialLambda?81.0:78.0)*sizeof(double)+(mesh.count+127)/128.0*sizeof(Stats)+receivers.size()*4.0*sizeof(double);
+    const double required=mesh.count*((mesh.materialLambda?81.0:78.0)+(mesh.sourceGradient[0]?3:0))*sizeof(double)+(mesh.count+127)/128.0*sizeof(Stats)+receivers.size()*4.0*sizeof(double);
     if(required>freeBytes*0.9)throw std::runtime_error("Insufficient free GPU memory for the new session (current session is retained). Reduce the grid or choose CPU.");
     for(auto& buffer:s.fields)buffer.allocate(9*mesh.count*sizeof(double));
     s.metrics.upload(mesh.metrics,9*mesh.count*sizeof(double));s.mesh.metrics=s.metrics.doubles();
     s.normals.upload(mesh.normals,3*mesh.count*sizeof(double));s.mesh.normals=s.normals.doubles();
     s.jacobian.upload(mesh.jacobian,mesh.count*sizeof(double));s.mesh.jacobian=s.jacobian.doubles();
     s.source.upload(mesh.source,mesh.count*sizeof(double));s.mesh.source=s.source.doubles();
+    for(int a=0;a<3;++a)if(mesh.sourceGradient[a]) {
+        s.sourceGradient[a].upload(mesh.sourceGradient[a],mesh.count*sizeof(double));
+        s.mesh.sourceGradient[a]=s.sourceGradient[a].doubles();
+    }
     s.damping.upload(mesh.damping,mesh.count*sizeof(double));s.mesh.damping=s.damping.doubles();
     if(mesh.materialLambda){s.materialLambda.upload(mesh.materialLambda,mesh.count*sizeof(double));s.materialMu.upload(mesh.materialMu,mesh.count*sizeof(double));s.materialDensity.upload(mesh.materialDensity,mesh.count*sizeof(double));s.mesh.materialLambda=s.materialLambda.doubles();s.mesh.materialMu=s.materialMu.doubles();s.mesh.materialDensity=s.materialDensity.doubles();}
     s.state=s.view(s.fields[0]);s.base=s.view(s.fields[1]);s.k1=s.view(s.fields[2]);s.k2=s.view(s.fields[3]);s.k3=s.view(s.fields[4]);s.k4=s.view(s.fields[5]);s.stage=s.view(s.fields[6]);
@@ -99,7 +104,7 @@ CudaEngine3D::CudaEngine3D(const Point::Mesh& mesh,const std::vector<ReceiverTra
 CudaEngine3D::~CudaEngine3D()=default;
 void CudaEngine3D::step(double time,double dt,double frequency,int step) {
     auto& s=*impl_;DeviceScope scope(s.device);checked(cudaMemcpy(s.fields[1].pointer,s.fields[0].pointer,9*s.mesh.count*sizeof(double),cudaMemcpyDeviceToDevice),"save step");
-    const auto forcing=[&](double t){const double tau=3.14159265358979323846*frequency*(t-1.5/frequency);return 2e8/(s.mesh.density*s.mesh.h*s.mesh.h*s.mesh.h)*(1-2*tau*tau)*std::exp(-tau*tau);};
+    const auto forcing=[&](double t){const double tau=3.14159265358979323846*frequency*(t-1.5/frequency);return s.mesh.sourceAmplitude/(s.mesh.density*s.mesh.h*s.mesh.h*s.mesh.h)*(1-2*tau*tau)*std::exp(-tau*tau);};
     s.rhs(s.state,s.k1,forcing(time),step,0);
     combineKernel<<<s.blocks,blockSize>>>(s.stage,s.base,s.k1,s.k2,s.k3,s.k4,s.mesh.count,0.5*dt,false);s.project(s.stage);
     s.rhs(s.stage,s.k2,forcing(time+0.5*dt),step,1);
