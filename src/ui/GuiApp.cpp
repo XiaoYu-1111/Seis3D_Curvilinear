@@ -106,6 +106,8 @@ struct Workbench3D {
     ComputeSettings3D activeComputeSettings;
     int selectedBackend{};
     BackendAvailability3D cudaAvailability;
+    CudaDeviceInventory3D cudaDevices;
+    std::vector<std::string> graphicsAdapters;
     bool autoFitGeometry{true};
     bool exportThreeComponents{};
     std::array<bool,7> panels{true,true,true,true,true,true,true};
@@ -130,6 +132,7 @@ struct Workbench3D {
     bool shortcutHelp{};
     BackendMemory3D memoryAvailable;
     BackendKind3D memoryBackend{BackendKind3D::Cpu};
+    int memoryDevice{-2};
     double memoryQueryTime{-10};
     int stepsPerFrame{1},theme{3},selectedReceiver{};
     double lastBatchMs{};
@@ -139,9 +142,13 @@ struct Workbench3D {
     std::array<char,2048> vtsPath{},csvPath{};
 
     Workbench3D() {
-        cudaAvailability=queryBackend3D(BackendKind3D::Cuda);
+        refreshComputeDevices();
         selectedBackend=cudaAvailability.available?1:0;
         simulation=createSimulationBackend3D(static_cast<BackendKind3D>(selectedBackend),error);
+    }
+    void refreshComputeDevices() {
+        cudaDevices=queryCudaDevices3D();graphicsAdapters=queryGraphicsAdapters3D();
+        cudaAvailability=selectCudaDevice3D(cudaDevices);memoryQueryTime=-10;
     }
 
     // UI preferences live outside physical state and are never read as simulation commands.
@@ -193,11 +200,12 @@ struct Workbench3D {
         const int previousReceivers=first?0:static_cast<int>(simulation->receivers().size());
         const auto parameters=useEdited?edited:simulation->parameters();
         const auto kind=useEdited?static_cast<BackendKind3D>(selectedBackend):simulation->backendInfo().kind;
+        const auto settings=useEdited?computeSettings:activeComputeSettings;
         if(kind!=simulation->backendInfo().kind) {
             auto candidate=createSimulationBackend3D(kind,error);
-            if(!candidate||!candidate->initialize(parameters,error,useEdited?computeSettings:activeComputeSettings))return false;
+            if(!candidate||!candidate->initialize(parameters,error,settings))return false;
             simulation=std::move(candidate);
-        } else if(!simulation->initialize(parameters,error,useEdited?computeSettings:activeComputeSettings))return false;
+        } else if(!simulation->initialize(parameters,error,settings))return false;
         if(useEdited)activeComputeSettings=computeSettings;
         ++performanceSession;
         modelBounds=physicalModelBounds3D(simulation->grid());modelFrameSession=0;
@@ -220,14 +228,14 @@ struct Workbench3D {
     }
     void memorySummary() {
         const auto kind=static_cast<BackendKind3D>(selectedBackend);
-        if(memoryBackend!=kind||ImGui::GetTime()-memoryQueryTime>1){memoryAvailable=queryBackendMemory3D(kind);memoryBackend=kind;memoryQueryTime=ImGui::GetTime();}
+        if(memoryBackend!=kind||memoryDevice!=computeSettings.cudaDevice||ImGui::GetTime()-memoryQueryTime>1){memoryAvailable=queryBackendMemory3D(kind,computeSettings.cudaDevice);memoryBackend=kind;memoryDevice=computeSettings.cudaDevice;memoryQueryTime=ImGui::GetTime();}
         const auto memory=estimateModelMemory3D(edited);constexpr double gib=1024.0*1024*1024;
         ImGui::TextWrapped(tr3D("Grid limit: 300 x 300 x 300 | %zu padded nodes"),memory.points);
         ImGui::TextWrapped(tr3D("Required RAM %.2f GiB | VRAM %.2f GiB"),(kind==BackendKind3D::Cuda?memory.cudaHostMiB:memory.cpuMiB)/1024,kind==BackendKind3D::Cuda?memory.deviceMiB/1024:0);
         ImGui::TextWrapped(tr3D("Available RAM %.2f GiB | VRAM %.2f GiB"),memoryAvailable.hostAvailableBytes/gib,memoryAvailable.deviceAvailableBytes/gib);
         if(!fitsMemory3D(memory,kind,memoryAvailable))ImGui::TextWrapped(tr3D("Requested grid exceeds limits or currently available memory. It will not be allocated."));
         if(functionButton3D("Fit to available memory",FunctionRole3D::Model,{-1,0})) {
-            memoryAvailable=queryBackendMemory3D(kind);SimulationParameters fitted;
+            memoryAvailable=queryBackendMemory3D(kind,computeSettings.cudaDevice);SimulationParameters fitted;
             if(fitModelToMemory3D(edited,kind,memoryAvailable,fitted)){edited=std::move(fitted);dirty=true;error.clear();status="Grid fitted to available memory. Spacing retained; review physical dimensions and apply rebuild.";}
             else error="Even the minimum grid cannot fit the selected backend or receiver settings.";
         }
@@ -332,6 +340,30 @@ struct Workbench3D {
         } catch(const std::exception& ex){error=ex.what();return false;}
     }
 
+    bool verifyDevicePolicy() {
+        if(!cudaAvailability.available)return true;
+        try {
+            const auto settings=computeSettings;const int backend=selectedBackend;
+            const auto devices=cudaDevices.devices;
+            for(const auto& device:devices) {
+                if(!device.available)continue;
+                computeSettings.cudaDevice=device.index;selectedBackend=1;
+                if(!rebuild(true)||simulation->backendInfo().cudaDevice!=device.index)throw std::runtime_error("GUI selected the wrong CUDA device");
+                if(!simulation->advance(2,error))throw std::runtime_error(error);
+                const auto revision=simulation->revision();const auto* session=simulation.get();
+                refreshComputeDevices();
+                if(simulation.get()!=session||simulation->revision()!=revision||simulation->currentStep()!=2)throw std::runtime_error("GPU refresh changed the running session");
+                computeSettings.cudaDevice=1000000;
+                if(rebuild(true)||simulation.get()!=session||simulation->revision()!=revision||simulation->backendInfo().cudaDevice!=device.index)throw std::runtime_error("Failed GPU selection discarded the session");
+                computeSettings.cudaDevice=device.index;
+                if(!simulation->advance(1,error)||!refreshDisplayFrame()||!renderer.render(*simulation,displayFrame,modelFrame,visuals,slices,640,400,error))throw std::runtime_error(error);
+            }
+            computeSettings=settings;selectedBackend=backend;
+            if(!rebuild(true))throw std::runtime_error(error);
+            std::cout<<"GUI device selection PASS: per-device rebuild, refresh, rejected switch, continued compute and render\n";return true;
+        } catch(const std::exception& ex){error=ex.what();return false;}
+    }
+
     // Writes raw physical field values; display normalization and gain do not affect exports.
     void exportSnapshot() {
         error.clear();
@@ -401,7 +433,7 @@ struct Workbench3D {
         return changed;
     }
     void toolbar() {
-        dirty=edited!=simulation->parameters()||selectedBackend!=static_cast<int>(simulation->backendInfo().kind)||computeSettings.cpuThreads!=activeComputeSettings.cpuThreads;
+        dirty=edited!=simulation->parameters()||selectedBackend!=static_cast<int>(simulation->backendInfo().kind)||computeSettings!=activeComputeSettings;
         if(ImGui::BeginMainMenuBar()) {
             ImGui::TextColored(palette3D().accent,"SEIS3D");
             if(ImGui::BeginMenu(label3D("Workspace"))) {
@@ -581,8 +613,31 @@ struct Workbench3D {
         if(ImGui::Selectable(label3D("CUDA GPU (Float64)"),selectedBackend==1)){selectedBackend=1;dirty=true;}
         ImGui::EndDisabled();ImGui::EndCombo();
     }
-    ImGui::TextWrapped(tr3D("CUDA: %s"),cudaAvailability.description.c_str());
+    ImGui::TextUnformatted(tr3D("CUDA device (apply on rebuild)"));ImGui::SetNextItemWidth(-1);
+    const auto staged=selectCudaDevice3D(cudaDevices,computeSettings.cudaDevice);
+    const std::string preview=computeSettings.cudaDevice<0?tr3D("Auto (largest usable VRAM)"):staged.description;
+    if(ImGui::BeginCombo("##cudaDevice",preview.c_str())) {
+        if(ImGui::Selectable(tr3D("Auto (largest usable VRAM)"),computeSettings.cudaDevice<0)){computeSettings.cudaDevice=-1;dirty=true;}
+        for(const auto& device:cudaDevices.devices) {
+            const auto label="GPU "+std::to_string(device.index)+" | "+device.name;
+            ImGui::BeginDisabled(!device.available);
+            if(ImGui::Selectable(label.c_str(),computeSettings.cudaDevice==device.index)){computeSettings.cudaDevice=device.index;dirty=true;}
+            if(ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))ImGui::SetTooltip("%s",device.description.c_str());
+            ImGui::EndDisabled();
+        }
+        ImGui::EndCombo();
+    }
+    if(functionButton3D("Refresh GPU devices",FunctionRole3D::Model,{-1,0}))refreshComputeDevices();
+    ImGui::TextWrapped(tr3D("CUDA: %s"),staged.description.c_str());
     ImGui::TextWrapped(tr3D("Active: %s"),tr3D(backend.deviceName.c_str()));
+    if(ImGui::TreeNodeEx(label3D("Detected graphics adapters"),ImGuiTreeNodeFlags_DefaultOpen)) {
+        for(const auto& name:graphicsAdapters)ImGui::BulletText("%s",name.c_str());
+        ImGui::TextWrapped(tr3D("Intel/AMD adapters are display devices; CUDA requires NVIDIA."));
+        if(cudaDevices.devices.empty())ImGui::TextWrapped("%s",cudaDevices.description.c_str());
+        else ImGui::TextWrapped(tr3D("%d CUDA device(s) detected."),static_cast<int>(cudaDevices.devices.size()));
+        for(const auto& device:cudaDevices.devices){ImGui::Separator();ImGui::TextWrapped(tr3D("GPU %d | %s | CC %d.%d | %.2f / %.2f GiB free"),device.index,device.name.c_str(),device.computeMajor,device.computeMinor,device.freeMemoryBytes/(1024.0*1024*1024),device.totalMemoryBytes/(1024.0*1024*1024));ImGui::TextWrapped("%s",device.available?tr3D("Available"):device.description.c_str());if(!device.pciBusId.empty())ImGui::Text("PCI: %s",device.pciBusId.c_str());}
+        ImGui::TreePop();
+    }
     ImGui::TextWrapped(tr3D("Core changes start a new session at t=0. Failed initialization retains the active session."));
     ImGui::BeginDisabled(selectedBackend!=0);
     ImGui::TextUnformatted(tr3D("CPU workers (0 = auto, 1 = serial)"));ImGui::SetNextItemWidth(-1);
@@ -593,7 +648,7 @@ struct Workbench3D {
     }
 
     void performanceControls() {
-        if(group("Compute backend"))computeControls();
+        if(group("Compute backend",true))computeControls();
         if(group("Measured compute time",true)) {
             timingSummary();const auto& t=simulation->diagnostics().timing;
             ImGui::Text(tr3D("Step min / max: %.4f / %.4f ms"),t.minStepMs,t.maxStepMs);
@@ -1083,7 +1138,8 @@ bool captureFrame3D(const std::filesystem::path& output,int width,int height) {
 int runWorkbench3D(int argc,char** argv) {
     const std::string mode=argc>1?argv[1]:"";
     const bool resizeSmoke=mode=="--smoke-resize";
-    const bool cudaSmoke=mode=="--smoke-cuda";
+    const bool deviceSmoke=mode=="--smoke-devices";
+    const bool cudaSmoke=mode=="--smoke-cuda"||deviceSmoke;
     const bool navigationSmoke=mode=="--smoke-navigation";
     const bool boundarySmoke=mode=="--smoke-boundary";
     const bool colorbarSmoke=mode=="--smoke-colorbar";
@@ -1149,6 +1205,8 @@ int runWorkbench3D(int argc,char** argv) {
         if(result==0&&smoke&&!acquisitionSmoke&&!cudaSmoke&&app.simulation->backendInfo().kind!=defaultBackend3D()){std::cerr<<"Application default backend not selected\n";result=12;}
         if(result==0 && resizeSmoke && !app.verifyResizePolicy()){std::cerr<<app.error<<'\n';result=7;}
         if(result==0 && (resizeSmoke||cudaSmoke) && !app.verifyBackendPolicy()){std::cerr<<app.error<<'\n';result=7;}
+        if(result==0 && cudaSmoke && !app.verifyDevicePolicy()){std::cerr<<app.error<<'\n';result=7;}
+        if(deviceSmoke)app.requestedTab=7;
         if(result==0&&modelDisplaySmoke&&!app.verifyMaterialCache()){std::cerr<<app.error<<'\n';result=12;}
         if(result==0&&navigationSmoke) {
             VisualSettings3D v;v.range=1;const auto wave=waveColor3D(.37,v);cycleVisual3D(v,VisualShortcut3D::ModelPalette);

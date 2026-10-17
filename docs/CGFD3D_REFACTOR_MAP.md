@@ -1,0 +1,17 @@
+# CGFD3D Refactor Map
+
+This map describes version 0.11 of the isolated CPU/CUDA extraction. The current V2 Cartesian solver is not modified.
+
+| CGFD3D area | New prototype location | Status |
+|---|---|---|
+| `forward/gd_t.c` — `gd_curv_metric_cal` | `include/Seis3D/CurvilinearSolver.hpp`, `Grid3D::buildGeometry` | Reworked for a compact body-fitted mesh; cofactor/Jacobian transform and positive-Jacobian check retained. Geometry still uses centered FD4, rather than upstream seven-point centered DRP. |
+| `forward/sv_curv_col_el_iso.c` — interior isotropic velocity/stress RHS | `src/CurvilinearSolver.cpp`, `evaluateRhs` | Nine first-order elastic fields and metric-to-physical derivative conversion are implemented. |
+| `forward/fd_t.c` — RK4 coefficients/stages | `src/CurvilinearSolver.cpp`, `CpuSimulation3D::advance` | RK coefficients, five-tap MacCormack-DRP operators, eight step-direction tuples and per-stage reversal are ported. Three halo layers are used. Alternating operators do not inherit a fixed-operator RK4 temporal-order guarantee. |
+| `forward/drv_rk_curv_col.c` — orchestration | `CpuSimulation3D`, CLI and GUI adapters | Single-process incremental session with persistent buffers and time-zero-inclusive receiver sampling. |
+| `forward/sv_curv_col_el_iso.c` — Traction Image surface closure | `Point::surfaceDerivative`, `Point::surfaceMomentum`, `Point::project` | Local traction-rate solve, conservative weighted traction image, and near-surface reduced stencils are implemented. Physical Z orientation is reflected for comparison. Safe upstream momentum stencils and all surface stress stencils are directly cross-checked; see VERIFICATION_0_11.md for an unsafe upstream mirror-index branch and remaining full-waveform differences. |
+| CGFD3D CFS-PML | `absorbingRate3D` | Configurable side/bottom sponge, independent axis widths, strength and enable flag; not equivalent to PML. |
+| NetCDF snapshot output | `src/VtsWriter.cpp` | Replaced by VTK XML StructuredGrid (`.vts`) so the explicit curvilinear coordinates travel with fields. |
+
+The extracted prototype avoids carrying the full upstream MPI/NetCDF runtime into the first verification target. A direct numerical comparison requires a runnable CGFD3D reference case with matched grid, source, discretization, and boundary settings.
+
+The local C reference is extracted at build time by tools/generate_upstream_reference.py into ../out/build/<preset>/Seis3D_Curvilinear/generated. RHS bodies and macros are preserved except C portability substitutions (restrict/VLA extents). SHA-256 hashes identify the extracted function bodies. It does not run the complete MPI/NetCDF application. Source locations above use the current inner-project layout.

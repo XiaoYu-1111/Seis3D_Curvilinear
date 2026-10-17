@@ -1,0 +1,80 @@
+# 构建、设备选择与程序分发
+
+## 独立仓库与外部输出
+
+包含本文件、`CMakeLists.txt`、`src` 和 `include` 的目录就是 Git 仓库根目录。在 VS 中直接打开这一层。构建不再依赖外层工作区的配置、图标、许可或原始参考仓库；外层 CMake 仅保留为本机兼容包装入口。
+
+`cmake/Targets.cmake` 定义各目标，`cmake/BuildLayout.cmake` 统一外部输出。所有生成路径相对于仓库根目录：
+
+| 内容 | 路径 |
+| --- | --- |
+| Release 缓存与中间文件 | `../out/build/x64-Release` |
+| Debug 缓存与中间文件 | `../out/build/x64-Debug` |
+| EXE、DLL、着色器和许可 | `../out/bin/<配置>` |
+| 静态库 | `../out/lib/<配置>` |
+| 安装预留位置 | `../out/install/<预设>` |
+| 离线说明及博客发布包 | `../out/documentation`、`../out/blog` |
+
+CMake 会拒绝在指定外层 out 以外创建构建树。仓库重命名不改变“父目录/out”的规则；同一父目录中的多个副本会共享该目录，因此不同副本应放在不同父目录下。
+
+## Visual Studio 与命令行
+
+需要 CMake 3.25+、C++20、MSVC x64/Windows SDK 和 Ninja。图形工作台需要 OpenGL 4.3、GLFW/GLEW SDK；通过 `SEIS3D_GLFW_ROOT`、`SEIS3D_GLEW_ROOT` 设置本机路径，现有 D 盘默认值仅适用于原开发机。默认预设启用 CUDA；Toolkit 须兼容所选 MSVC 工具集。VS 直接打开本仓库，选择 `x64-Release` / `x64-Debug`，将 `Seis3DCurvilinear` 设为启动目标。
+
+以下命令在本仓库根目录的 MSVC x64 开发者终端执行：
+
+```powershell
+cmake --preset x64-Release
+cmake --build --preset x64-Release --parallel
+ctest --preset x64-Release
+..\out\bin\Release\Seis3DCurvilinear.exe
+```
+
+Debug 使用对应的 `x64-Debug` 预设。旧版 VS 可使用仓库内 `CMakeSettings.json`，输出路径一致；支持预设的版本优先使用 `CMakePresets.json`。个人 SDK 位置或长期选项放在不提交的 `CMakeUserPresets.json` 中，继承现有预设并覆盖变量。
+
+无 CUDA Toolkit 时运行 `cmake --preset x64-Release -DSEIS3D_ENABLE_CUDA=OFF`；无图形 SDK 时再加 `-DSEIS3D_BUILD_GUI=OFF`，仍可构建 CPU 命令行和数值验证。重新配置预设会恢复其中显式设置的值。Linux GUI 使用系统 OpenGL、glfw3、GLEW 包；当前实际构建验证以 Windows 为主。
+
+从旧外层入口迁移时，缓存中的 `CMAKE_HOME_DIRECTORY` 不同。先将原 Release/Debug 构建树移至外层 out 的备份目录，再从本仓库重新配置；保留现有 EXE 和模拟数据。不要对同一个缓存交替使用外层与仓库两个入口。
+
+## CUDA 架构
+
+默认列表为 `75-real;86-real;89-real;120-real;75-virtual`，完整列表要求 CUDA Toolkit 12.8 或支持这些目标的后续版本。
+
+| GPU 系列 | 原生架构 | 示例 |
+| --- | --- | --- |
+| RTX 20 | sm_75 | RTX 2060、2070、2080 |
+| RTX 30 | sm_86 | RTX 3060、3070、3080 |
+| RTX 40 | sm_89 | RTX 4060、4070、4080 |
+| RTX 50 | sm_120 | RTX 5060、5070、5080 |
+
+`-real` 编入对应机器码，`75-virtual` 额外保留 compute_75 PTX，供兼容驱动即时编译。较早 Toolkit 应缩减到其支持的架构。仅在本机运行可覆盖 `-DCMAKE_CUDA_ARCHITECTURES=native`；多值参数需整体加引号，例如 `"-DCMAKE_CUDA_ARCHITECTURES=75-real;89-real;75-virtual"`。架构兼容不替代驱动和显存要求。
+
+## 图标、参考验证与输出资源
+
+默认图标原件在仓库 `resources/icons/seis3d.ico`，可通过 `SEIS3D_APP_ICON` 覆盖。PNG 和 64 px 预览同目录保存。构建生成的 RC 与上游参考头位于外部构建目录的 `generated` 子目录，不再需要原有 `out/assets/icons` 副本。图标缺失时警告并省略嵌入，不使整个 GUI 构建失败。
+
+ImGui/ImPlot 源码及许可保存在 `third_party`；公共头文件通过目标 include 路径导出，仍使用 `#include "Seis3D/..."`。`third_party/cgfd3d_reference` 保留直接 RHS 验证所需的三个原始上游文件及来源、摘要与许可，原始外层 CGFD3D 仓库不再是构建前提。Python 可用时生成对照头并注册对应测试，不可用时只省略该验证目标。分析与文档依赖见 `tools/requirements.txt`。
+
+程序从 EXE 同级 `shaders` 读取着色器，不依赖当前工作目录。DLL、着色器和许可在构建后复制到外层 bin。MSVC/Ninja 的中文头文件依赖探测逻辑保留在仓库 cmake 模块中。
+
+## 显卡检测与求解设备
+
+程序枚举 CUDA 可见的所有设备，逐卡读取设备编号、型号、计算能力、PCI 地址和显存，并在该设备上检查当前二进制的数值内核。第 0 块设备不可用时，仍继续检查后续设备；失败原因保留在列表中。Windows 同时通过 DXGI 列出硬件显示适配器，因而核显、AMD 显卡与 NVIDIA 显卡都能在信息区看到，CUDA 求解器只接受通过检查的 NVIDIA CUDA 设备。操作系统、驱动或环境变量隐藏的设备不会出现在 CUDA 可见列表。
+
+进入“运行 → 性能对比 → 计算后端”，选择 CPU/CUDA，再选择具体 CUDA 设备。默认“自动”选择总显存最大的可用设备，总显存相同时选择枚举中较早者；根据总量而非瞬时空闲量选择可避免重建时由于旧会话占用显存而反复换卡。“刷新显卡设备”更新清单；手动选择后点击“应用/重建”生效，从 t=0 开始。显存预检和实际分配针对同一张已解析的设备；显存不足时报告错误并保留原会话，不自动改用另一张卡或 CPU。显卡编号属于当前运行时枚举结果，因此不跨计算机保存编号。
+
+设备扫描、显存查询、步进、接收采样、切片回传、快照导出和缓冲区释放均使用明确的 CUDA 设备上下文。刷新列表不会迁移正在运行的计算。一次模拟仍在一块卡上执行，尚未实现跨卡区域分解。渲染使用 OpenGL 上下文所属显卡，求解使用选定 CUDA 卡，通过主机切片传递数据，二者可以不同。
+
+发送运行程序时保留 EXE 同级的 CUDA/GLFW/GLEW DLL、`shaders` 和 `licenses`，并在目标机安装相应 MSVC 运行库及兼容的 NVIDIA 驱动；不要求安装整个 CUDA Toolkit。RTX 2060 等较小显存设备需按剩余显存降低模型尺寸，架构兼容并不增加显存容量。
+
+`curvilinear_device_selection` 验证完整扫描后的选择策略、显式指定设备、逐卡 CPU/CUDA 对照、扫描与读回交错以及失败切卡保留会话。只有检测到至少两块可用 CUDA 设备时才能实测跨卡上下文；单卡测试不能代替多卡硬件验收。界面检查可运行 `../out/bin/Release/Seis3DCurvilinear.exe --smoke-devices`。
+
+架构与构建语义参考：[NVIDIA CUDA GPU 计算能力](https://developer.nvidia.com/cuda/gpus)、[CMake 3.29 CUDA_ARCHITECTURES](https://cmake.org/cmake/help/v3.29/prop_tgt/CUDA_ARCHITECTURES.html)。
+
+参考：[Visual Studio CMake 预设](https://learn.microsoft.com/en-us/cpp/build/cmake-presets-vs)、[CMake MSVC 调试信息设置](https://cmake.org/cmake/help/latest/variable/CMAKE_MSVC_DEBUG_INFORMATION_FORMAT.html)。
+
+## 分发边界
+
+发送 Release 程序时保留同级 DLL、`shaders`、`licenses`；目标机安装相应 MSVC 运行库，支持 OpenGL 4.3，CUDA 还需兼容的 NVIDIA 驱动。无需安装完整 CUDA Toolkit。较小显存卡需要相应降低模型尺寸。
+
+当前默认导出与界面偏好目录仍由编译时的外层 out 决定，不会自动跟随 EXE 移动。跨计算机分发需确认默认位置可写，或为部署环境重新配置；手动选择 VTS/CSV 路径只改变对应导出目标。独立的运行时数据目录配置尚待完善。

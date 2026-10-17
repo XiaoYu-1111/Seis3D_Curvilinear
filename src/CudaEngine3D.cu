@@ -9,10 +9,19 @@ constexpr int blockSize=128;
 void checked(cudaError_t code,const char* action) {
     if(code!=cudaSuccess)throw std::runtime_error(std::string("CUDA ")+action+": "+cudaGetErrorString(code));
 }
+struct DeviceScope {
+    int previous{-1},device;
+    explicit DeviceScope(int selected):device(selected) {
+        if(cudaGetDevice(&previous)!=cudaSuccess){cudaGetLastError();previous=-1;}
+        checked(cudaSetDevice(device),"select device");
+    }
+    ~DeviceScope(){if(previous>=0&&previous!=device)cudaSetDevice(previous);}
+};
 struct DeviceBuffer {
     void* pointer{};
-    ~DeviceBuffer(){if(pointer)cudaFree(pointer);}
-    void allocate(std::size_t bytes){checked(cudaMalloc(&pointer,bytes),"allocation");checked(cudaMemset(pointer,0,bytes),"zero buffer");}
+    int device{-1};
+    ~DeviceBuffer(){if(pointer){int previous=-1;cudaGetDevice(&previous);if(cudaSetDevice(device)==cudaSuccess)cudaFree(pointer);if(previous>=0&&previous!=device)cudaSetDevice(previous);}}
+    void allocate(std::size_t bytes){checked(cudaGetDevice(&device),"buffer device");checked(cudaMalloc(&pointer,bytes),"allocation");checked(cudaMemset(pointer,0,bytes),"zero buffer");}
     double* doubles() const{return static_cast<double*>(pointer);}
     void upload(const void* source,std::size_t bytes){allocate(bytes);checked(cudaMemcpy(pointer,source,bytes,cudaMemcpyHostToDevice),"upload");}
 };
@@ -77,25 +86,38 @@ struct CudaEngine3D::Impl {
     Point::Fields state,base,k1,k2,k3,k4,stage;
     std::vector<Stats> hostStats;
     std::vector<double> hostReceivers;
-    int blocks{},surfaceBlocks{};
+    int blocks{},surfaceBlocks{},device{-1};
     Point::Fields view(DeviceBuffer& buffer) const {Point::Fields w;for(int f=0;f<9;++f)w.f[f]=buffer.doubles()+f*mesh.count;return w;}
     void project(Point::Fields w){surfaceKernel<<<surfaceBlocks,blockSize>>>(w,mesh);checked(cudaGetLastError(),"surface projection launch");}
     void rhs(Point::Fields w,Point::Fields out,double value,int step,int stage){rhsKernel<<<blocks,blockSize>>>(w,out,mesh,value,step,stage);checked(cudaGetLastError(),"RHS launch");}
 };
-BackendAvailability3D queryCuda3D() {
+CudaDeviceInventory3D queryCudaDevices3D() {
+    CudaDeviceInventory3D inventory;
     int count=0;const auto status=cudaGetDeviceCount(&count);
-    if(status!=cudaSuccess)return {false,std::string("CUDA unavailable: ")+cudaGetErrorString(status)};
-    if(count==0)return {false,"No CUDA device detected."};
-    cudaDeviceProp properties{};const auto result=cudaGetDeviceProperties(&properties,0);
-    if(result!=cudaSuccess)return {false,cudaGetErrorString(result)};
-    if(properties.major<6)return {false,"CUDA backend requires compute capability >= 6.0."};
-    cudaFuncAttributes attributes{};const auto kernelStatus=cudaFuncGetAttributes(&attributes,rhsKernel);
-    if(kernelStatus!=cudaSuccess)return {false,std::string("CUDA kernel unavailable for this device: ")+cudaGetErrorString(kernelStatus)};
-    return {true,properties.name};
+    if(status!=cudaSuccess){inventory.description=std::string("CUDA unavailable: ")+cudaGetErrorString(status);cudaGetLastError();return inventory;}
+    if(count==0){inventory.description="No CUDA device detected.";return inventory;}
+    for(int index=0;index<count;++index) {
+        CudaDeviceInfo3D device;device.index=index;device.name="CUDA GPU "+std::to_string(index);
+        try {
+            cudaDeviceProp properties{};checked(cudaGetDeviceProperties(&properties,index),"device properties");
+            device.name=properties.name;device.computeMajor=properties.major;device.computeMinor=properties.minor;device.totalMemoryBytes=properties.totalGlobalMem;
+            char bus[32]{};if(cudaDeviceGetPCIBusId(bus,sizeof(bus),index)==cudaSuccess)device.pciBusId=bus;else cudaGetLastError();
+            if(properties.major<6)device.description="CUDA backend requires compute capability >= 6.0.";
+            else {
+                DeviceScope scope(index);cudaFuncAttributes attributes{};
+                checked(cudaFuncGetAttributes(&attributes,rhsKernel),"kernel unavailable for this device");
+                std::size_t free=0,total=0;checked(cudaMemGetInfo(&free,&total),"memory query");
+                device.freeMemoryBytes=free;device.totalMemoryBytes=total;device.available=true;device.description="Available";
+            }
+        } catch(const std::exception& ex){device.description=ex.what();cudaGetLastError();}
+        inventory.devices.push_back(std::move(device));
+    }
+    inventory.description=std::to_string(count)+" CUDA device(s) detected.";
+    return inventory;
 }
-std::uint64_t queryCudaMemory3D(){std::size_t freeBytes=0,total=0;return cudaMemGetInfo(&freeBytes,&total)==cudaSuccess?freeBytes:0;}
-CudaEngine3D::CudaEngine3D(const Point::Mesh& mesh,const std::vector<ReceiverTrace3D>& receivers):impl_(std::make_unique<Impl>()) {
-    auto& s=*impl_;checked(cudaSetDevice(0),"select device");s.mesh=mesh;
+std::uint64_t queryCudaMemory3D(int device){try {DeviceScope scope(device);std::size_t freeBytes=0,total=0;checked(cudaMemGetInfo(&freeBytes,&total),"memory query");return freeBytes;}catch(...){cudaGetLastError();return 0;}}
+CudaEngine3D::CudaEngine3D(const Point::Mesh& mesh,const std::vector<ReceiverTrace3D>& receivers,int device):impl_(std::make_unique<Impl>()) {
+    auto& s=*impl_;s.device=device;DeviceScope scope(device);s.mesh=mesh;
     std::size_t freeBytes=0,totalBytes=0;checked(cudaMemGetInfo(&freeBytes,&totalBytes),"memory query");
     const double required=mesh.count*(mesh.materialLambda?81.0:78.0)*sizeof(double)+(mesh.count+127)/128.0*sizeof(Stats)+receivers.size()*4.0*sizeof(double);
     if(required>freeBytes*0.9)throw std::runtime_error("Insufficient free GPU memory for the new session (current session is retained). Reduce the grid or choose CPU.");
@@ -116,7 +138,7 @@ CudaEngine3D::CudaEngine3D(const Point::Mesh& mesh,const std::vector<ReceiverTra
 }
 CudaEngine3D::~CudaEngine3D()=default;
 void CudaEngine3D::step(double time,double dt,double frequency,int step) {
-    auto& s=*impl_;checked(cudaMemcpy(s.fields[1].pointer,s.fields[0].pointer,9*s.mesh.count*sizeof(double),cudaMemcpyDeviceToDevice),"save step");
+    auto& s=*impl_;DeviceScope scope(s.device);checked(cudaMemcpy(s.fields[1].pointer,s.fields[0].pointer,9*s.mesh.count*sizeof(double),cudaMemcpyDeviceToDevice),"save step");
     const auto forcing=[&](double t){const double tau=3.14159265358979323846*frequency*(t-1.5/frequency);return 2e8/(s.mesh.density*s.mesh.h*s.mesh.h*s.mesh.h)*(1-2*tau*tau)*std::exp(-tau*tau);};
     s.rhs(s.state,s.k1,forcing(time),step,0);
     combineKernel<<<s.blocks,blockSize>>>(s.stage,s.base,s.k1,s.k2,s.k3,s.k4,s.mesh.count,0.5*dt,false);s.project(s.stage);
@@ -127,22 +149,22 @@ void CudaEngine3D::step(double time,double dt,double frequency,int step) {
     s.rhs(s.stage,s.k4,forcing(time+dt),step,3);
     combineKernel<<<s.blocks,blockSize>>>(s.state,s.base,s.k1,s.k2,s.k3,s.k4,s.mesh.count,dt,true);s.project(s.state);
 }
-void CudaEngine3D::rollback(){auto& s=*impl_;checked(cudaMemcpy(s.fields[0].pointer,s.fields[1].pointer,9*s.mesh.count*sizeof(double),cudaMemcpyDeviceToDevice),"restore step");}
-void CudaEngine3D::resetFields(){auto& s=*impl_;for(auto& field:s.fields)checked(cudaMemset(field.pointer,0,9*s.mesh.count*sizeof(double)),"clear fields");checked(cudaDeviceSynchronize(),"clear completion");}
+void CudaEngine3D::rollback(){auto& s=*impl_;DeviceScope scope(s.device);checked(cudaMemcpy(s.fields[0].pointer,s.fields[1].pointer,9*s.mesh.count*sizeof(double),cudaMemcpyDeviceToDevice),"restore step");}
+void CudaEngine3D::resetFields(){auto& s=*impl_;DeviceScope scope(s.device);for(auto& field:s.fields)checked(cudaMemset(field.pointer,0,9*s.mesh.count*sizeof(double)),"clear fields");checked(cudaDeviceSynchronize(),"clear completion");}
 void CudaEngine3D::diagnostics(Diagnostics3D& d) {
-    auto& s=*impl_;statsKernel<<<s.blocks,blockSize>>>(s.state,s.k4,s.mesh,static_cast<Stats*>(s.statsBuffer.pointer));checked(cudaGetLastError(),"diagnostics launch");
+    auto& s=*impl_;DeviceScope scope(s.device);statsKernel<<<s.blocks,blockSize>>>(s.state,s.k4,s.mesh,static_cast<Stats*>(s.statsBuffer.pointer));checked(cudaGetLastError(),"diagnostics launch");
     checked(cudaMemcpy(s.hostStats.data(),s.statsBuffer.pointer,s.hostStats.size()*sizeof(Stats),cudaMemcpyDeviceToHost),"compact diagnostics download");
     double norm=0,traction=0;d.displayPeaks={};d.elasticEnergy=0;d.allFinite=true;
     for(const auto& stats:s.hostStats){for(int c=0;c<5;++c)d.displayPeaks[c]=std::max(d.displayPeaks[c],stats.peak[c]);d.elasticEnergy+=stats.energy;norm=std::max(norm,stats.rateNorm);traction=std::max(traction,stats.rateTraction);d.allFinite=d.allFinite&&!stats.bad;}
     d.maxAbsVelocity=d.displayPeaks[3];d.maxTractionRateRelative=traction/std::max(norm,1e-30);d.allFinite=d.allFinite&&std::isfinite(d.elasticEnergy);d.peakEnergy=std::max(d.peakEnergy,d.elasticEnergy);
 }
 void CudaEngine3D::sample(std::vector<ReceiverTrace3D>& receivers) {
-    auto& s=*impl_;receiverKernel<<<(static_cast<int>(receivers.size())+31)/32,32>>>(s.state,static_cast<std::size_t*>(s.receiverIndices.pointer),s.receiverValues.doubles(),static_cast<int>(receivers.size()));checked(cudaGetLastError(),"receiver launch");
+    auto& s=*impl_;DeviceScope scope(s.device);receiverKernel<<<(static_cast<int>(receivers.size())+31)/32,32>>>(s.state,static_cast<std::size_t*>(s.receiverIndices.pointer),s.receiverValues.doubles(),static_cast<int>(receivers.size()));checked(cudaGetLastError(),"receiver launch");
     checked(cudaMemcpy(s.hostReceivers.data(),s.receiverValues.pointer,s.hostReceivers.size()*sizeof(double),cudaMemcpyDeviceToHost),"receiver download");
     for(std::size_t r=0;r<receivers.size();++r){receivers[r].samples.push_back(s.hostReceivers[3*r+2]);receivers[r].samplesVx.push_back(s.hostReceivers[3*r]);receivers[r].samplesVy.push_back(s.hostReceivers[3*r+1]);}
 }
 void CudaEngine3D::slices(const DisplayRequest3D& request,DisplayFrame3D& frame) {
-    auto& s=*impl_;const int nx=s.mesh.nx-2*ghostWidth3D,ny=s.mesh.ny-2*ghostWidth3D,nz=s.mesh.nz-2*ghostWidth3D;
+    auto& s=*impl_;DeviceScope scope(s.device);const int nx=s.mesh.nx-2*ghostWidth3D,ny=s.mesh.ny-2*ghostWidth3D,nz=s.mesh.nz-2*ghostWidth3D;
     const int widths[3]{nx,ny,nx},heights[3]{nz,nz,ny};frame.bytes=0;
     for(int p=0;p<3;++p) {
         auto& out=frame.planes[p];out.width=widths[p];out.height=heights[p];out.values.resize(static_cast<std::size_t>(out.width)*out.height);
@@ -151,6 +173,6 @@ void CudaEngine3D::slices(const DisplayRequest3D& request,DisplayFrame3D& frame)
     }
 }
 void CudaEngine3D::download(std::array<std::vector<double>,9>& fields) const {
-    const auto& s=*impl_;for(int f=0;f<9;++f){fields[f].resize(s.mesh.count);checked(cudaMemcpy(fields[f].data(),s.state.f[f],s.mesh.count*sizeof(double),cudaMemcpyDeviceToHost),"explicit volume download");}
+    const auto& s=*impl_;DeviceScope scope(s.device);for(int f=0;f<9;++f){fields[f].resize(s.mesh.count);checked(cudaMemcpy(fields[f].data(),s.state.f[f],s.mesh.count*sizeof(double),cudaMemcpyDeviceToHost),"explicit volume download");}
 }
 }

@@ -6,7 +6,7 @@ namespace Seis3D::Curvilinear {
 // Only slices, receiver values and block-reduced statistics cross PCIe during interactive stepping.
 class CudaEngine3D {
 public:
-    CudaEngine3D(const Point::Mesh&,const std::vector<ReceiverTrace3D>&);
+    CudaEngine3D(const Point::Mesh&,const std::vector<ReceiverTrace3D>&,int device);
     ~CudaEngine3D();
     CudaEngine3D(const CudaEngine3D&)=delete;
     CudaEngine3D& operator=(const CudaEngine3D&)=delete;
@@ -21,6 +21,5 @@ private:
     struct Impl;
     std::unique_ptr<Impl> impl_;
 };
-BackendAvailability3D queryCuda3D();
-std::uint64_t queryCudaMemory3D();
+std::uint64_t queryCudaMemory3D(int device);
 }

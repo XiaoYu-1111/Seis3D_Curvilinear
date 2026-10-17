@@ -1,0 +1,79 @@
+{
+  "version": 3,
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 25,
+    "patch": 0
+  },
+  "configurePresets": [
+    {
+      "name": "windows-base",
+      "hidden": true,
+      "generator": "Ninja",
+      "architecture": {
+        "value": "x64",
+        "strategy": "external"
+      },
+      "cacheVariables": {
+        "CMAKE_CXX_COMPILER": "cl",
+        "SEIS3D_BUILD_GUI": "ON",
+        "SEIS3D_BUILD_VALIDATION": "ON",
+        "SEIS3D_ENABLE_CUDA": "ON",
+        "CMAKE_CUDA_ARCHITECTURES": "75-real;86-real;89-real;120-real;75-virtual"
+      },
+      "vendor": {
+        "microsoft.com/VisualStudioSettings/CMake/1.0": {
+          "hostOS": [
+            "Windows"
+          ]
+        }
+      }
+    },
+    {
+      "name": "x64-Release",
+      "inherits": "windows-base",
+      "displayName": "Windows x64 Release / CPU + CUDA",
+      "binaryDir": "${sourceDir}/../out/build/x64-Release",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_INSTALL_PREFIX": "${sourceDir}/../out/install/x64-Release"
+      }
+    },
+    {
+      "name": "x64-Debug",
+      "inherits": "windows-base",
+      "displayName": "Windows x64 Debug / CPU + CUDA",
+      "binaryDir": "${sourceDir}/../out/build/x64-Debug",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_INSTALL_PREFIX": "${sourceDir}/../out/install/x64-Debug"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "x64-Release",
+      "configurePreset": "x64-Release"
+    },
+    {
+      "name": "x64-Debug",
+      "configurePreset": "x64-Debug"
+    }
+  ],
+  "testPresets": [
+    {
+      "name": "x64-Release",
+      "configurePreset": "x64-Release",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "x64-Debug",
+      "configurePreset": "x64-Debug",
+      "output": {
+        "outputOnFailure": true
+      }
+    }
+  ]
+}

@@ -361,3 +361,25 @@ MigrationBackup/
 
 # Fody - auto-generated XML schema
 FodyWeavers.xsd
+
+# Project output belongs in ../out; protect accidental in-repository builds.
+/build/
+/out/
+/bin/
+/lib/
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+CTestTestfile.cmake
+Testing/
+build.ninja
+.ninja_deps
+.ninja_log
+CMakeUserPresets.json
+*.exe
+*.dll
+*.lib
+*.exp
+*.vts
+*.ppm
+*.zip
