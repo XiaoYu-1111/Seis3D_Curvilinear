@@ -91,6 +91,8 @@ python -B tools/package_documentation.py
 
 图标原件为 `resources/icons/seis3d.png`、`seis3d.ico`；Windows 图标编入 EXE，无需单独携带 ICO。着色器在 `shaders`，构建后复制到 EXE 同级。运行程序分发需保留同级 DLL、`shaders`、`licenses`；详细说明见[构建与分发](docs/BUILDING.md)。
 
+实际 DEM 可通过 [Jupyter 剖面提取工具](tools/dem_profiles/README.md)预览并选择矩形范围，沿横向、纵向或任意两点截取实际高程，导出二维模拟需要的 `x_m,elevation_m`。工具独立于模拟程序，保留源高程及原 DEM 坐标，输出统一位于外层 `out/dem_profiles`。
+
 ## 操作与来源
 
 Q 切换波场色带，W 切换波场分量，E 切换模型配色，Shift 反向；Space 运行/暂停，N 单步，C 清空波场，R 适配视图，G 网格，B 吸收区域，F1 快捷键帮助。完整说明见[用户指南](docs/USER_GUIDE.md)。
