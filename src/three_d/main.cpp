@@ -17,7 +17,7 @@ int main(int argc, char** argv) {
     SimulationResult result;
     std::string error;
     if (!runDemo(parameters, result, error)) {
-        std::cerr << "Seis3D curvilinear demo failed: " << error << '\n';
+        std::cerr << "SeisWave Lab Curvilinear 3D demo failed: " << error << '\n';
         return 1;
     }
     std::error_code ec;
@@ -31,7 +31,7 @@ int main(int argc, char** argv) {
         return 3;
     }
     std::cout << std::fixed << std::setprecision(6)
-              << "Seis3D Curvilinear completed | backend: " << (result.computeBackend.kind==BackendKind3D::Cuda?"CUDA Float64":"CPU Float64") << '\n'
+              << "SeisWave Lab · Curvilinear 3D completed | backend: " << (result.computeBackend.kind==BackendKind3D::Cuda?"CUDA Float64":"CPU Float64") << '\n'
               << "Device: " << result.computeBackend.deviceName << " | workers: " << result.computeBackend.workerThreads << '\n'
               << "Grid (physical): " << parameters.nx << " x " << parameters.ny << " x " << parameters.nz << '\n'
               << "RK4 steps: " << result.steps << " | dt: " << result.dt * 1000.0 << " ms\n"

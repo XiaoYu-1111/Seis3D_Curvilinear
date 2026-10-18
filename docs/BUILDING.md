@@ -2,11 +2,11 @@
 
 ## 二维、三维和共享模块
 
-程序默认打开主页，左侧为二维曲面模拟，右侧为三维曲面模拟；`Seis3DCurvilinear.exe --2d` / `--3d` 可直接进入。三维旧命令行与截图参数仍由三维工作区处理。二维操作和五场理论见[二维工作流](TWO_D_WORKFLOW.md)。
+程序默认打开主页，左侧为二维曲面模拟，右侧为三维曲面模拟；`SeisWaveLab_Curvilinear.exe --2d` / `--3d` 可直接进入。三维旧命令行与截图参数仍由三维工作区处理。二维操作和五场理论见[二维工作流](TWO_D_WORKFLOW.md)。
 
 `src/two_d`、`src/three_d` 分别包含本维度的 CPU/CUDA 求解、验证和 ui 子目录；`src/common` 放设备服务，`src/common/ui` 放主页、应用图形生命周期和语言主题。公共头分别在 `include/Seis2D`、`include/Seis3D`、`include/SeisCommon`，include 通过对应 CMake 目标传播，源码不再留有旧位置副本。
 
-`seis2d_curvilinear_core`、`seis3d_curvilinear_core` 分别链接共享 `seis_compute`；二维核心不链接三维核心。启用 CUDA 时分别链接 `seis2d_cuda`、`seis3d_cuda`，设备探测由 `seis_compute_cuda` 提供。`seis2d_ui`、`seis3d_ui` 链接本维度核心及 `seis_ui_common`，最终组合为原名 EXE。VS 中各目标按真实源码目录分组。关闭 CUDA 时两个核心均可使用 CPU；`seis2d_validation` 验证二维方程及后端一致性。
+`seis2d_curvilinear_core`、`seis3d_curvilinear_core` 分别链接共享 `seis_compute`；二维核心不链接三维核心。启用 CUDA 时分别链接 `seis2d_cuda`、`seis3d_cuda`，设备探测由 `seis_compute_cuda` 提供。`seis2d_ui`、`seis3d_ui` 链接本维度核心及 `seis_ui_common`，最终组合为 `SeisWaveLab_Curvilinear.exe`。VS 中各目标按真实源码目录分组。关闭 CUDA 时两个核心均可使用 CPU；`seis2d_validation` 验证二维方程及后端一致性。
 
 `seis_records` 提供独立 SEG-Y 读写，不依赖 CUDA 或图形上下文；`seis_record_io_validation` 检查数据交换。二维/三维共享的 `RecordView` 位于 `src/common/ui`，三维 `RecordView3D` 是兼容包装。SEG-Y 模块采用标准库实现，不增加外部 SEG-Y SDK 依赖。导入文件及导出限制见[记录与 SEG-Y](SEGY_AND_RECORDS.md)。
 
@@ -29,7 +29,7 @@ CMake 会拒绝在指定外层 out 以外创建构建树。仓库重命名不改
 
 ## Visual Studio 与命令行
 
-需要 CMake 3.25+、C++20、MSVC x64/Windows SDK 和 Ninja。图形工作台需要 OpenGL 4.3、GLFW/GLEW SDK；通过 `SEIS3D_GLFW_ROOT`、`SEIS3D_GLEW_ROOT` 设置本机路径，现有 D 盘默认值仅适用于原开发机。默认预设启用 CUDA；Toolkit 须兼容所选 MSVC 工具集。VS 直接打开本仓库，选择 `x64-Release` / `x64-Debug`，将 `Seis3DCurvilinear` 设为启动目标。
+需要 CMake 3.25+、C++20、MSVC x64/Windows SDK 和 Ninja。图形工作台需要 OpenGL 4.3、GLFW/GLEW SDK；通过 `SEIS3D_GLFW_ROOT`、`SEIS3D_GLEW_ROOT` 设置本机路径，现有 D 盘默认值仅适用于原开发机。默认预设启用 CUDA；Toolkit 须兼容所选 MSVC 工具集。VS 直接打开本仓库，选择 `x64-Release` / `x64-Debug`，将 `SeisWaveLab_Curvilinear` 设为启动目标。
 
 以下命令在本仓库根目录的 MSVC x64 开发者终端执行：
 
@@ -37,7 +37,7 @@ CMake 会拒绝在指定外层 out 以外创建构建树。仓库重命名不改
 cmake --preset x64-Release
 cmake --build --preset x64-Release --parallel
 ctest --preset x64-Release
-..\out\bin\Release\Seis3DCurvilinear.exe
+..\out\bin\Release\SeisWaveLab_Curvilinear.exe
 ```
 
 Debug 使用对应的 `x64-Debug` 预设。旧版 VS 可使用仓库内 `CMakeSettings.json`，输出路径一致；支持预设的版本优先使用 `CMakePresets.json`。个人 SDK 位置或长期选项放在不提交的 `CMakeUserPresets.json` 中，继承现有预设并覆盖变量。
@@ -79,7 +79,7 @@ ImGui/ImPlot 源码及许可保存在 `third_party`；公共头文件通过目�
 
 发送运行程序时保留 EXE 同级的 CUDA/GLFW/GLEW DLL、`shaders` 和 `licenses`，并在目标机安装相应 MSVC 运行库及兼容的 NVIDIA 驱动；不要求安装整个 CUDA Toolkit。RTX 2060 等较小显存设备需按剩余显存降低模型尺寸，架构兼容并不增加显存容量。
 
-`curvilinear_device_selection` 验证完整扫描后的选择策略、显式指定设备、逐卡 CPU/CUDA 对照、扫描与读回交错以及失败切卡保留会话。只有检测到至少两块可用 CUDA 设备时才能实测跨卡上下文；单卡测试不能代替多卡硬件验收。界面检查可运行 `../out/bin/Release/Seis3DCurvilinear.exe --smoke-devices`。
+`curvilinear_device_selection` 验证完整扫描后的选择策略、显式指定设备、逐卡 CPU/CUDA 对照、扫描与读回交错以及失败切卡保留会话。只有检测到至少两块可用 CUDA 设备时才能实测跨卡上下文；单卡测试不能代替多卡硬件验收。界面检查可运行 `../out/bin/Release/SeisWaveLab_Curvilinear.exe --smoke-devices`。
 
 架构与构建语义参考：[NVIDIA CUDA GPU 计算能力](https://developer.nvidia.com/cuda/gpus)、[CMake 3.29 CUDA_ARCHITECTURES](https://cmake.org/cmake/help/v3.29/prop_tgt/CUDA_ARCHITECTURES.html)。
 
@@ -90,3 +90,11 @@ ImGui/ImPlot 源码及许可保存在 `third_party`；公共头文件通过目�
 发送 Release 程序时保留同级 DLL、`shaders`、`licenses`；目标机安装相应 MSVC 运行库，支持 OpenGL 4.3，CUDA 还需兼容的 NVIDIA 驱动。无需安装完整 CUDA Toolkit。较小显存卡需要相应降低模型尺寸。
 
 当前默认导出与界面偏好目录仍由编译时的外层 out 决定，不会自动跟随 EXE 移动。跨计算机分发需确认默认位置可写，或为部署环境重新配置；手动选择 VTS/CSV 路径只改变对应导出目标。独立的运行时数据目录配置尚待完善。
+
+## 项目标识与目录迁移
+
+产品显示名为 **SeisWave Lab · Curvilinear**，本地工作区为 `SeisWaveLab_Curvilinear_Workspace`，独立 Git 仓库和 GUI CMake 目标均为 `SeisWaveLab_Curvilinear`；主程序为 `../out/bin/<配置>/SeisWaveLab_Curvilinear.exe`。二维、三维数值命名空间、库名、验证程序及 `SEIS3D_*` 选项保持原接口，模型和记录格式保持兼容。
+
+从旧目录迁移时应整体移动 `.git`、源码、资源和同级 `out`；模拟数据与 DEM 工作流继续位于外层 `out`。绝对路径记录在旧 CMake 缓存及已编译程序中，因此迁移后必须从新仓库目录重新配置并构建 Release/Debug，不能只给旧 EXE 改名。原缓存和旧主程序可留在外层 `out/archive`，不加入源码仓库。VS 请关闭原文件夹，重新打开新仓库目录并选择新的 GUI 启动目标。
+
+本地改名不修改 GitHub 上的仓库名或 `origin`。如另行在 GitHub 更名，确认新地址已存在后再执行 `git remote set-url origin <新地址>`；当前已有文章的 `seis3d-curvilinear` 页面路径及附件目录保留，避免已发布链接失效。

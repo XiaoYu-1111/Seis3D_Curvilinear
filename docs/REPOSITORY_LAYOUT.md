@@ -1,6 +1,6 @@
 # Git 仓库与本地输出的边界
 
-当前 Git 根目录是 `Seis3D_Curvilinear/Seis3D_Curvilinear` 中的内层目录。本文件、README、构建配置、源码和说明图片均在该仓库内部；外层目录只是本机工作区。克隆到其他位置时，只需当前仓库及已安装的编译工具、图形 SDK 和可选 CUDA，不需要原开发机外层文件。
+当前 Git 根目录是 `SeisWaveLab_Curvilinear_Workspace/SeisWaveLab_Curvilinear` 中的内层目录。本文件、README、构建配置、源码和说明图片均在该仓库内部；外层目录只是本机工作区。克隆到其他位置时，只需当前仓库及已安装的编译工具、图形 SDK 和可选 CUDA，不需要原开发机外层文件。
 
 ## 应纳入仓库
 

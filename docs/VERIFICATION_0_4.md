@@ -26,7 +26,7 @@
 
 ## 图形与数据检查
 
-`Seis3DCurvilinear.exe --smoke-cuda` 实际选择 CUDA 运行到约 3/4 时刻，导出 VTS/CSV、渲染三维与三切片，保存 `../out/gui_smoke.ppm` 后退出。`--smoke-resize` 另检查模型大小改变。两种模式均验证 CPU/CUDA 双向切换、初始化失败保留原会话、切换后场与记录清零，以及相机和增益保留。
+`SeisWaveLab_Curvilinear.exe --smoke-cuda` 实际选择 CUDA 运行到约 3/4 时刻，导出 VTS/CSV、渲染三维与三切片，保存 `../out/gui_smoke.ppm` 后退出。`--smoke-resize` 另检查模型大小改变。两种模式均验证 CPU/CUDA 双向切换、初始化失败保留原会话、切换后场与记录清零，以及相机和增益保留。
 
 ## 科学适用范围
 

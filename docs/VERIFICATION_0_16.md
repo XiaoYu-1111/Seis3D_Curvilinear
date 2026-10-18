@@ -57,9 +57,9 @@
 
 PPM 到 PNG 无损转换，校验原始 RGB 字节、分辨率及 SHA-256。显示截图前后检查原始记录指纹不变，捕获不保存用户偏好。截图期间同时运行回归作业，底栏耗时不用于 CPU/CUDA 或版本性能基准。
 
-维护正文为 `docs/PROJECT_MANUAL.md`，完整输出为 `../out/documentation/Seis3D_Curvilinear/PROJECT_MANUAL.md`，合并现有数值推导作为附录。输出中还包括截图集、清单、图表数据和许可。
+维护正文为 `docs/PROJECT_MANUAL.md`，完整输出为 `../out/documentation/SeisWaveLab_Curvilinear/PROJECT_MANUAL.md`，合并现有数值推导作为附录。输出中还包括截图集、清单、图表数据和许可。
 
-发布包为 `../out/blog/Seis3D_Curvilinear_GitHub_Pages_Hexo.zip`：Jekyll front matter / relative_url 与 Hexo post asset 标签分开生成，保留原图与参考材料。工具验证所有生成 Markdown 的本地链接、像素摘要和文章资源引用。未执行用户站点主题构建，也没有上传/推送；数学公式需按该站点主题启用 MathJax/KaTeX 与对应 Markdown 渲染。
+发布包为 `../out/blog/SeisWaveLab_Curvilinear_GitHub_Pages_Hexo.zip`：Jekyll front matter / relative_url 与 Hexo post asset 标签分开生成，保留原图与参考材料。工具验证所有生成 Markdown 的本地链接、像素摘要和文章资源引用。未执行用户站点主题构建，也没有上传/推送；数学公式需按该站点主题启用 MathJax/KaTeX 与对应 Markdown 渲染。
 
 ## 5. 最终验证
 

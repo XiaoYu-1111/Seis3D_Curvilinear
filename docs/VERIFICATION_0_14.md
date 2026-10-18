@@ -67,7 +67,7 @@ Release 编译通过；六项针对性 CTest **6/6 通过**。独立显示、导
 ```powershell
 cmake --build ../out/build/x64-Release --config Release --parallel 4
 ctest --test-dir ../out/build/x64-Release -C Release --output-on-failure -R 'curvilinear_(model_display|cpu_invariants|cpu_cuda|acquisition_and_timing|layered_material|presets_and_records)$'
-& './out/bin/Release/Seis3DCurvilinear.exe' --smoke-model-display
-& './out/bin/Release/Seis3DCurvilinear.exe' --smoke-navigation
-& './out/bin/Release/Seis3DCurvilinear.exe' --smoke-resize
+& './out/bin/Release/SeisWaveLab_Curvilinear.exe' --smoke-model-display
+& './out/bin/Release/SeisWaveLab_Curvilinear.exe' --smoke-navigation
+& './out/bin/Release/SeisWaveLab_Curvilinear.exe' --smoke-resize
 ```

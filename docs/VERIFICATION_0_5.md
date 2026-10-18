@@ -6,7 +6,7 @@
 
 参考 V2 的 `src/Seis3D/Workspace3D.cpp` 和 `Main_cpp/AppTheme.cpp`：左侧参数/诊断、中间四视图、底部接收记录，支持三维优先和紧凑页签。顶部提供双语和主题选择。外观服务在 `src/ui/Presentation3D.*`，中英文目录在 `Translations3D.inc`；标签使用稳定的 ImGui `###` ID，语言切换不创建另一套停靠窗口。
 
-运行 `../out/bin/Release/Seis3DCurvilinear.exe --smoke-ui`，自动生成 11 个实际 OpenGL 截图至 `../out/ui-review/`，覆盖：
+运行 `../out/bin/Release/SeisWaveLab_Curvilinear.exe --smoke-ui`，自动生成 11 个实际 OpenGL 截图至 `../out/ui-review/`，覆盖：
 
 - 1024×720、1280×800、1600×1000、1920×1080。
 - English / 简体中文、全部 10 种主题、18/20/22/26 px 字号及全部三种布局。

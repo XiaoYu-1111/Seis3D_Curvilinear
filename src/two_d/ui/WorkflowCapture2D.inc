@@ -1,7 +1,7 @@
 // Full native framebuffer captures from a separate, reproducible solver session.
 int captureWorkflow2D() {
     SeisWave::Ui::AppRuntime runtime;std::string error;
-    if(!runtime.open("SeisWave Lab | 2D Curvilinear P-SV | CPU / CUDA",true,error))throw std::runtime_error(error);
+    if(!runtime.open("SeisWave Lab · Curvilinear | 2D P-SV | CPU / CUDA",true,error))throw std::runtime_error(error);
     glfwSetWindowSize(runtime.window(),2560,1494);glfwPollEvents();
     setLanguage3D(1);applyTheme3D(9);SeisWave::Ui::setInterfaceFontSize(20);
     Workbench app;app.staged.nx=app.staged.nz=200;app.staged.spacing=2.5;app.staged.frequency=30;

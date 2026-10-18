@@ -135,7 +135,7 @@ void workflowStrip() {
 Route runHomeScreen(bool smoke, int choice) {
     std::string error;
     AppRuntime runtime;
-    if (!runtime.open("SeisWave Lab | 2D / 3D Curvilinear", smoke, error))
+    if (!runtime.open("SeisWave Lab · Curvilinear", smoke, error))
         throw std::runtime_error(error);
     const auto inventory = Seis3D::Curvilinear::queryCudaDevices3D();
     int usable = 0;

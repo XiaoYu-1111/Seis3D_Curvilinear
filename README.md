@@ -1,4 +1,6 @@
-# SeisWave Lab · 二维 / 三维曲面弹性波模拟
+# SeisWave Lab · Curvilinear
+
+二维 / 三维曲面弹性波模拟工作台。
 
 ![程序图标](resources/icons/preview64.png)
 
@@ -32,8 +34,8 @@
 **当前目录就是需要上传的 Git 仓库**，包含构建入口、源码、文档及其图片、图标、工具和许可。无需上传外层工作目录。所有生成文件统一写到本仓库同级的 `../out`：
 
 ```text
-工作目录/
-├─ Seis3D_Curvilinear/       Git 仓库，在 VS 中打开这一层
+SeisWaveLab_Curvilinear_Workspace/
+├─ SeisWaveLab_Curvilinear/       Git 仓库，在 VS 中打开这一层
 │  ├─ CMakeLists.txt        独立构建入口
 │  ├─ CMakePresets.json     Release / Debug 预设
 │  ├─ cmake/               构建布局、选项与目标定义
@@ -57,6 +59,8 @@
 
 文档图片和应用图标是仓库资源，保留在仓库中；构建缓存、EXE/DLL、模拟导出、原始截图中间文件和发布 ZIP 均留在 `../out`。具体边界见[仓库整理说明](docs/REPOSITORY_LAYOUT.md)。
 
+本地工作区名为 `SeisWaveLab_Curvilinear_Workspace`，仓库及主程序名为 `SeisWaveLab_Curvilinear`。目录重命名保留 `.git` 与历史；远程 GitHub 地址保持现有配置，未自动更改线上仓库名。`Seis2D` / `Seis3D` 命名空间和 `SEIS3D_*` 构建选项继续作为数值接口使用。
+
 ## 构建与运行
 
 需要 CMake 3.25+、C++20 编译器。Windows 使用 MSVC x64/Ninja；图形界面需要 GLFW、GLEW SDK 和 OpenGL 4.3。默认预设启用 CPU/OpenMP 和 CUDA，完整架构列表需要 CUDA Toolkit 12.8 或支持这些目标的后续版本。命令在本仓库根目录、MSVC 开发者终端执行：
@@ -65,10 +69,10 @@
 cmake --preset x64-Release
 cmake --build --preset x64-Release --parallel
 ctest --preset x64-Release
-..\out\bin\Release\Seis3DCurvilinear.exe
+..\out\bin\Release\SeisWaveLab_Curvilinear.exe
 ```
 
-在 VS 中直接打开本 Git 仓库，选择 `x64-Release` / `x64-Debug`，将 `Seis3DCurvilinear` 设为启动目标。其他计算机通过 `SEIS3D_GLFW_ROOT`、`SEIS3D_GLEW_ROOT` 指定本机 SDK 路径，详见[构建说明](docs/BUILDING.md)。
+在 VS 中直接打开本 Git 仓库，选择 `x64-Release` / `x64-Debug`，将 `SeisWaveLab_Curvilinear` 设为启动目标。其他计算机通过 `SEIS3D_GLFW_ROOT`、`SEIS3D_GLEW_ROOT` 指定本机 SDK 路径，详见[构建说明](docs/BUILDING.md)。
 
 无 CUDA Toolkit 时：
 

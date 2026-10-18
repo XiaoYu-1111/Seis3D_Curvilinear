@@ -25,7 +25,7 @@ def project_output() -> Path:
     for parent in (Path.cwd(), *Path.cwd().parents):
         if (parent / 'CMakePresets.json').is_file() and (parent / 'src').is_dir():
             return parent.parent / 'out/dem_profiles'
-        if (parent / 'Seis3D_Curvilinear/CMakePresets.json').is_file():
+        if (parent / 'SeisWaveLab_Curvilinear/CMakePresets.json').is_file():
             return parent / 'out/dem_profiles'
     return Path.cwd() / 'out/dem_profiles'
 

@@ -91,7 +91,7 @@ python tools/analyze_cfl_symbol.py --samples 21 --cfl 0.8 1.3 1.8 2.0 --ratios 0
 
 ## 6. 构建与界面检查
 
-Release 可执行文件位于 `../out/bin/Release/Seis3DCurvilinear.exe`。`--smoke-cfl` 在 1024×720 到 1920×1080、18..26 px 字号、中英文和十种主题下生成十二组实际 OpenGL 图像，检查切换前后物理状态与原始记录不变。图像位于 `../out/cfl-review`；CFL 输入显示 0.800，范围和限制项说明已中英文本地化。旧 C=0.22 可直接输入并重建，不需要更换求解核心。
+Release 可执行文件位于 `../out/bin/Release/SeisWaveLab_Curvilinear.exe`。`--smoke-cfl` 在 1024×720 到 1920×1080、18..26 px 字号、中英文和十种主题下生成十二组实际 OpenGL 图像，检查切换前后物理状态与原始记录不变。图像位于 `../out/cfl-review`；CFL 输入显示 0.800，范围和限制项说明已中英文本地化。旧 C=0.22 可直接输入并重建，不需要更换求解核心。
 
 十项 Release CTest 均已通过：原 C 函数对照、解析波、CFL 范围、CPU 不变量、完整长时能量、CPU/CUDA、尺寸/主频矩阵、接收与计时、分层介质、预设与记录。完整回归首轮八项通过；修正第 4 节所述两处旧测试假设后，CPU 不变量与长时测试重新运行通过。32 次尺寸/主频 CPU/CUDA 计算全部通过；新增 20 次 CFL 物理网格计算的最大尾段/源窗口峰值能量比约 0.07141。
 
@@ -101,5 +101,5 @@ Release 可执行文件位于 `../out/bin/Release/Seis3DCurvilinear.exe`。`--sm
 cmake --build ../out/build/x64-Release --config Release --parallel 4
 ctest --test-dir ../out/build/x64-Release -C Release --output-on-failure
 & './out/bin/Release/seis3d_cfl_validation.exe' --benchmark
-& './out/bin/Release/Seis3DCurvilinear.exe' --smoke-cfl
+& './out/bin/Release/SeisWaveLab_Curvilinear.exe' --smoke-cfl
 ```

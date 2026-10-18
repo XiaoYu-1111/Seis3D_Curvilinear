@@ -250,14 +250,14 @@ if(SEIS3D_BUILD_GUI)
     target_include_directories(seis2d_ui PUBLIC "${SEIS3D_SOURCE_ROOT}/src/two_d/ui")
     target_link_libraries(seis2d_ui PUBLIC seis2d_curvilinear_core seis_ui_common)
     seis3d_target_options(seis2d_ui)
-    add_executable(Seis3DCurvilinear "${SEIS3D_SOURCE_ROOT}/src/common/ui/Application.cpp")
-    target_link_libraries(Seis3DCurvilinear PRIVATE seis2d_ui seis3d_ui)
+    add_executable(SeisWaveLab_Curvilinear "${SEIS3D_SOURCE_ROOT}/src/common/ui/Application.cpp")
+    target_link_libraries(SeisWaveLab_Curvilinear PRIVATE seis2d_ui seis3d_ui)
     file(GLOB seis3dUiHeaders CONFIGURE_DEPENDS "${SEIS3D_SOURCE_ROOT}/src/three_d/ui/*.hpp" "${SEIS3D_SOURCE_ROOT}/src/three_d/ui/*.inc")
     target_sources(seis3d_ui PRIVATE ${seis3dUiHeaders})
     file(GLOB seisCommonUiHeaders CONFIGURE_DEPENDS "${SEIS3D_SOURCE_ROOT}/src/common/ui/*.hpp" "${SEIS3D_SOURCE_ROOT}/src/common/ui/*.inc")
     target_sources(seis_ui_common PRIVATE ${seisCommonUiHeaders})
     target_sources(seis2d_ui PRIVATE "${SEIS3D_SOURCE_ROOT}/src/two_d/ui/Workbench2D.hpp")
-    target_sources(Seis3DCurvilinear PRIVATE
+    target_sources(SeisWaveLab_Curvilinear PRIVATE
         "${SEIS3D_SOURCE_ROOT}/resources/AppIcon.rc.in"
         "${SEIS3D_SOURCE_ROOT}/shaders/curvilinear.vert" "${SEIS3D_SOURCE_ROOT}/shaders/curvilinear.frag")
     set_source_files_properties("${SEIS3D_SOURCE_ROOT}/resources/AppIcon.rc.in"
@@ -273,37 +273,37 @@ if(SEIS3D_BUILD_GUI)
             set(seis3dIconResource "${CMAKE_CURRENT_BINARY_DIR}/generated/AppIcon.rc")
             configure_file("${SEIS3D_SOURCE_ROOT}/resources/AppIcon.rc.in" "${seis3dIconResource}" @ONLY)
             set_source_files_properties("${seis3dIconResource}" PROPERTIES OBJECT_DEPENDS "${SEIS3D_APP_ICON}")
-            target_sources(Seis3DCurvilinear PRIVATE "${seis3dIconResource}")
-            target_compile_definitions(Seis3DCurvilinear PRIVATE SEIS3D_HAS_APP_ICON=1)
+            target_sources(SeisWaveLab_Curvilinear PRIVATE "${seis3dIconResource}")
+            target_compile_definitions(SeisWaveLab_Curvilinear PRIVATE SEIS3D_HAS_APP_ICON=1)
         else()
             message(WARNING "Application icon not found: ${SEIS3D_APP_ICON}. Building without an embedded icon; set SEIS3D_APP_ICON to an existing ICO file.")
         endif()
     endif()
-    target_link_libraries(Seis3DCurvilinear PRIVATE seis3d_curvilinear_core seis3d_implot ${glew_target} OpenGL::GL)
+    target_link_libraries(SeisWaveLab_Curvilinear PRIVATE seis3d_curvilinear_core seis3d_implot ${glew_target} OpenGL::GL)
     if(WIN32)
-        target_link_libraries(Seis3DCurvilinear PRIVATE comdlg32 user32 gdi32 shell32)
-        add_custom_command(TARGET Seis3DCurvilinear POST_BUILD
-            COMMAND ${CMAKE_COMMAND} -E copy_if_different "$<TARGET_FILE:seis3d_glfw>" "$<TARGET_FILE_DIR:Seis3DCurvilinear>"
-            COMMAND ${CMAKE_COMMAND} -E copy_if_different "$<TARGET_FILE:seis3d_glew>" "$<TARGET_FILE_DIR:Seis3DCurvilinear>" VERBATIM)
+        target_link_libraries(SeisWaveLab_Curvilinear PRIVATE comdlg32 user32 gdi32 shell32)
+        add_custom_command(TARGET SeisWaveLab_Curvilinear POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different "$<TARGET_FILE:seis3d_glfw>" "$<TARGET_FILE_DIR:SeisWaveLab_Curvilinear>"
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different "$<TARGET_FILE:seis3d_glew>" "$<TARGET_FILE_DIR:SeisWaveLab_Curvilinear>" VERBATIM)
     endif()
-    seis3d_target_options(Seis3DCurvilinear)
-    seis3d_deploy_cuda(Seis3DCurvilinear)
-    add_custom_command(TARGET Seis3DCurvilinear POST_BUILD COMMAND ${CMAKE_COMMAND} -E copy_directory "${SEIS3D_SOURCE_ROOT}/shaders" "$<TARGET_FILE_DIR:Seis3DCurvilinear>/shaders" VERBATIM)
-    add_custom_command(TARGET Seis3DCurvilinear POST_BUILD COMMAND ${CMAKE_COMMAND} -E copy_directory "${SEIS3D_SOURCE_ROOT}/resources/examples" "$<TARGET_FILE_DIR:Seis3DCurvilinear>/examples" VERBATIM)
+    seis3d_target_options(SeisWaveLab_Curvilinear)
+    seis3d_deploy_cuda(SeisWaveLab_Curvilinear)
+    add_custom_command(TARGET SeisWaveLab_Curvilinear POST_BUILD COMMAND ${CMAKE_COMMAND} -E copy_directory "${SEIS3D_SOURCE_ROOT}/shaders" "$<TARGET_FILE_DIR:SeisWaveLab_Curvilinear>/shaders" VERBATIM)
+    add_custom_command(TARGET SeisWaveLab_Curvilinear POST_BUILD COMMAND ${CMAKE_COMMAND} -E copy_directory "${SEIS3D_SOURCE_ROOT}/resources/examples" "$<TARGET_FILE_DIR:SeisWaveLab_Curvilinear>/examples" VERBATIM)
     file(GLOB_RECURSE seisElevationExamples CONFIGURE_DEPENDS LIST_DIRECTORIES FALSE "${SEIS3D_SOURCE_ROOT}/resources/examples/*")
-    set_property(TARGET Seis3DCurvilinear APPEND PROPERTY LINK_DEPENDS ${seisElevationExamples})
-    add_custom_command(TARGET Seis3DCurvilinear POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:Seis3DCurvilinear>/licenses"
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${SEIS3D_SOURCE_ROOT}/LICENSE" "$<TARGET_FILE_DIR:Seis3DCurvilinear>/licenses/CGFD3D_GPL3.txt"
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${SEIS3D_SOURCE_ROOT}/THIRD_PARTY_NOTICES.md" "$<TARGET_FILE_DIR:Seis3DCurvilinear>/licenses"
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${SEIS3D_SOURCE_ROOT}/third_party/imgui/LICENSE.txt" "$<TARGET_FILE_DIR:Seis3DCurvilinear>/licenses/ImGui_MIT.txt"
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${SEIS3D_SOURCE_ROOT}/third_party/implot/LICENSE.txt" "$<TARGET_FILE_DIR:Seis3DCurvilinear>/licenses/ImPlot_MIT.txt"
-        COMMAND ${CMAKE_COMMAND} -E copy_directory "${SEIS3D_SOURCE_ROOT}/third_party/licenses" "$<TARGET_FILE_DIR:Seis3DCurvilinear>/licenses" VERBATIM)
-    set_property(TARGET Seis3DCurvilinear APPEND PROPERTY LINK_DEPENDS "${SEIS3D_SOURCE_ROOT}/shaders/curvilinear.vert" "${SEIS3D_SOURCE_ROOT}/shaders/curvilinear.frag")
+    set_property(TARGET SeisWaveLab_Curvilinear APPEND PROPERTY LINK_DEPENDS ${seisElevationExamples})
+    add_custom_command(TARGET SeisWaveLab_Curvilinear POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:SeisWaveLab_Curvilinear>/licenses"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${SEIS3D_SOURCE_ROOT}/LICENSE" "$<TARGET_FILE_DIR:SeisWaveLab_Curvilinear>/licenses/CGFD3D_GPL3.txt"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${SEIS3D_SOURCE_ROOT}/THIRD_PARTY_NOTICES.md" "$<TARGET_FILE_DIR:SeisWaveLab_Curvilinear>/licenses"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${SEIS3D_SOURCE_ROOT}/third_party/imgui/LICENSE.txt" "$<TARGET_FILE_DIR:SeisWaveLab_Curvilinear>/licenses/ImGui_MIT.txt"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${SEIS3D_SOURCE_ROOT}/third_party/implot/LICENSE.txt" "$<TARGET_FILE_DIR:SeisWaveLab_Curvilinear>/licenses/ImPlot_MIT.txt"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory "${SEIS3D_SOURCE_ROOT}/third_party/licenses" "$<TARGET_FILE_DIR:SeisWaveLab_Curvilinear>/licenses" VERBATIM)
+    set_property(TARGET SeisWaveLab_Curvilinear APPEND PROPERTY LINK_DEPENDS "${SEIS3D_SOURCE_ROOT}/shaders/curvilinear.vert" "${SEIS3D_SOURCE_ROOT}/shaders/curvilinear.frag")
     file(GLOB_RECURSE seis3dRuntimeLicenses CONFIGURE_DEPENDS LIST_DIRECTORIES FALSE "${SEIS3D_SOURCE_ROOT}/third_party/licenses/*")
-    set_property(TARGET Seis3DCurvilinear APPEND PROPERTY LINK_DEPENDS
+    set_property(TARGET SeisWaveLab_Curvilinear APPEND PROPERTY LINK_DEPENDS
         "${SEIS3D_SOURCE_ROOT}/LICENSE" "${SEIS3D_SOURCE_ROOT}/THIRD_PARTY_NOTICES.md"
         "${SEIS3D_SOURCE_ROOT}/third_party/imgui/LICENSE.txt" "${SEIS3D_SOURCE_ROOT}/third_party/implot/LICENSE.txt"
         ${seis3dRuntimeLicenses})
-    set_target_properties(Seis3DCurvilinear PROPERTIES VS_DEBUGGER_WORKING_DIRECTORY "$<TARGET_FILE_DIR:Seis3DCurvilinear>")
+    set_target_properties(SeisWaveLab_Curvilinear PROPERTIES VS_DEBUGGER_WORKING_DIRECTORY "$<TARGET_FILE_DIR:SeisWaveLab_Curvilinear>")
 endif()

@@ -1229,7 +1229,7 @@ int runWorkbench3D(int argc,char** argv) {
     std::error_code ec;std::filesystem::create_directories(outputRoot3D()/"ui",ec);
     if(ec){std::cerr<<ec.message()<<'\n';return 1;}
     SeisWave::Ui::AppRuntime host;std::string hostError;
-    if(!host.open("SeisWave Lab - 3D Curvilinear | CPU / CUDA",smoke,hostError)){std::cerr<<hostError<<'\n';return 2;}
+    if(!host.open("SeisWave Lab · Curvilinear | 3D | CPU / CUDA",smoke,hostError)){std::cerr<<hostError<<'\n';return 2;}
     GLFWwindow* window=host.window();auto& io=ImGui::GetIO();
     const std::string ini=utf8Path3D(outputRoot3D()/"ui"/(smoke?"smoke.ini":"workspace.ini"));io.IniFilename=smoke?nullptr:ini.c_str();
     bool returnToHome=false;

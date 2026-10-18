@@ -14,8 +14,8 @@ from PIL import Image
 ROOT = Path(__file__).resolve().parents[1]
 OUTPUT = ROOT.parent / 'out'
 SHOTS = ROOT / 'docs/images'
-DOCS = OUTPUT / 'documentation/Seis3D_Curvilinear'
-BLOG = OUTPUT / 'blog/Seis3D_Curvilinear'
+DOCS = OUTPUT / 'documentation/SeisWaveLab_Curvilinear'
+BLOG = OUTPUT / 'blog/SeisWaveLab_Curvilinear'
 TOKEN = re.compile(r'(!?)\[([^\]]*)\]\(([^)]+)\)')
 TITLE = 'SeisWave Lab：曲网格二维与三维弹性波模拟的理论、实现与应用'
 
@@ -187,7 +187,7 @@ def main():
 
 ## 无站点阅读
 
-assets 下的 PROJECT_MANUAL.md / SCREENSHOT_GALLERY.md 为普通相对路径 Markdown。另有独立 Seis3D_Curvilinear_Documentation.zip 文档包。图片含完整原图；不要对比自动色标的跨时刻绝对幅度。
+assets 下的 PROJECT_MANUAL.md / SCREENSHOT_GALLERY.md 为普通相对路径 Markdown。另有独立 SeisWaveLab_Curvilinear_Documentation.zip 文档包。图片含完整原图；不要对比自动色标的跨时刻绝对幅度。
 
 官方依据：https://jekyllrb.com/docs/front-matter/ ，https://jekyllrb.com/docs/liquid/filters/ ，https://hexo.io/docs/asset-folders 。
 ''',encoding='utf-8')
@@ -213,9 +213,9 @@ assets 下的 PROJECT_MANUAL.md / SCREENSHOT_GALLERY.md 为普通相对路径 Ma
     blog_files += ['github-pages/assets/seis3d-curvilinear/'+f for f in doc_files]
     blog_files += ['hexo/source/_posts/seis3d-curvilinear/'+f for f in doc_files]
     blog_files += ['hexo/source/_posts/seis3d-curvilinear/'+Path(f).name for f in doc_files if f.startswith('images/')]
-    archive(DOCS,OUTPUT/'documentation/Seis3D_Curvilinear_Documentation.zip',doc_files)
-    archive(BLOG,OUTPUT/'blog/Seis3D_Curvilinear_GitHub_Pages_Hexo.zip',blog_files)
-    for package in [OUTPUT/'documentation/Seis3D_Curvilinear_Documentation.zip',OUTPUT/'blog/Seis3D_Curvilinear_GitHub_Pages_Hexo.zip']:
+    archive(DOCS,OUTPUT/'documentation/SeisWaveLab_Curvilinear_Documentation.zip',doc_files)
+    archive(BLOG,OUTPUT/'blog/SeisWaveLab_Curvilinear_GitHub_Pages_Hexo.zip',blog_files)
+    for package in [OUTPUT/'documentation/SeisWaveLab_Curvilinear_Documentation.zip',OUTPUT/'blog/SeisWaveLab_Curvilinear_GitHub_Pages_Hexo.zip']:
         with zipfile.ZipFile(package) as z: assert z.testzip() is None,package
     print(json.dumps(report,ensure_ascii=False,indent=2))
 

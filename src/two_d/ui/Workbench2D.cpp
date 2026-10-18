@@ -1621,7 +1621,7 @@ int validateModelWorkflow2D() {
 int runWorkbench2D(bool smoke, bool homeTest) {
     std::string error;
     SeisWave::Ui::AppRuntime runtime;
-    if (!runtime.open("SeisWave Lab | 2D Curvilinear P-SV | CPU / CUDA", smoke, error)) {
+    if (!runtime.open("SeisWave Lab · Curvilinear | 2D P-SV | CPU / CUDA", smoke, error)) {
         std::cerr << error << '\n';
         return 1;
     }
