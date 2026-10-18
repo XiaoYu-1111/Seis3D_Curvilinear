@@ -1,4 +1,5 @@
 #include "SeisCommon/SegyIo.hpp"
+#include "SeisCommon/AtomicFile.hpp"
 #include <algorithm>
 #include <bit>
 #include <cmath>
@@ -7,9 +8,6 @@
 #include <limits>
 #include <sstream>
 #include <stdexcept>
-#ifdef _WIN32
-#include <windows.h>
-#endif
 namespace SeisWave {
 namespace {
 using Bytes = std::vector<unsigned char>;
@@ -71,22 +69,68 @@ std::int32_t millimetres(double v) {
             "SEG-Y coordinates exceed the supported millimetre range.");
     return static_cast<std::int32_t>(std::llround(v * 1000));
 }
+// ASCII <-> IBM CP037 for the traditional 3200-byte EBCDIC textual header.
+constexpr unsigned char ebcdic[]{
+    0x00,0x01,0x02,0x03,0x37,0x2d,0x2e,0x2f,0x16,0x05,0x25,0x0b,0x0c,0x0d,0x0e,0x0f,
+    0x10,0x11,0x12,0x13,0x3c,0x3d,0x32,0x26,0x18,0x19,0x3f,0x27,0x1c,0x1d,0x1e,0x1f,
+    0x40,0x5a,0x7f,0x7b,0x5b,0x6c,0x50,0x7d,0x4d,0x5d,0x5c,0x4e,0x6b,0x60,0x4b,0x61,
+    0xf0,0xf1,0xf2,0xf3,0xf4,0xf5,0xf6,0xf7,0xf8,0xf9,0x7a,0x5e,0x4c,0x7e,0x6e,0x6f,
+    0x7c,0xc1,0xc2,0xc3,0xc4,0xc5,0xc6,0xc7,0xc8,0xc9,0xd1,0xd2,0xd3,0xd4,0xd5,0xd6,
+    0xd7,0xd8,0xd9,0xe2,0xe3,0xe4,0xe5,0xe6,0xe7,0xe8,0xe9,0xba,0xe0,0xbb,0xb0,0x6d,
+    0x79,0x81,0x82,0x83,0x84,0x85,0x86,0x87,0x88,0x89,0x91,0x92,0x93,0x94,0x95,0x96,
+    0x97,0x98,0x99,0xa2,0xa3,0xa4,0xa5,0xa6,0xa7,0xa8,0xa9,0xc0,0x4f,0xd0,0xa1,0x07};
+std::uint32_t ibmFloat(double v) {
+    if (v == 0) return 0;
+    const auto sign = std::signbit(v) ? 0x80000000U : 0;
+    int power{};
+    std::frexp(std::abs(v), &power);
+    int exponent = static_cast<int>(std::ceil(power / 4.0));
+    if (exponent < -64) return 0; // Below the smallest normalized IBM number.
+    require(exponent <= 63, "SEG-Y IBM32 sample overflow; reduce the export multiplier.");
+    auto fraction = static_cast<std::uint32_t>(std::llround(std::ldexp(std::abs(v), 24 - 4 * exponent)));
+    if (fraction == 0x1000000U) { fraction = 0x100000U; ++exponent; }
+    require(exponent <= 63, "SEG-Y IBM32 rounding overflow.");
+    return sign | (static_cast<std::uint32_t>(exponent + 64) << 24) | fraction;
+}
 } // namespace
 bool writeSegy(const RecordDataView &records, int component, const std::filesystem::path &path,
                std::string &error, bool ieee64) {
+    SegyExportOptions options;
+    options.profile = ieee64 ? SegyExportProfile::ExactIeee64 : SegyExportProfile::ExactIeee32;
+    return writeSegy(records, component, path, error, options);
+}
+bool writeSegy(const RecordDataView &records, int component, const std::filesystem::path &path,
+               std::string &error, const SegyExportOptions &options) {
     std::filesystem::path temporary;
     error.clear();
     try {
+        const bool compatible = options.profile == SegyExportProfile::LegacyIbm32 ||
+                                options.profile == SegyExportProfile::CompatibleIeee32;
+        const bool ieee64 = options.profile == SegyExportProfile::ExactIeee64;
+        const bool ibm = options.profile == SegyExportProfile::LegacyIbm32;
+        require(options.profile == SegyExportProfile::ExactIeee32 || ieee64 || compatible, "Unknown SEG-Y export profile.");
+        require(std::isfinite(options.sampleGain) && options.sampleGain > 0, "SEG-Y export multiplier must be finite and positive.");
+        require(std::isfinite(options.sampleIntervalSeconds) && options.sampleIntervalSeconds >= 0,
+                "Invalid SEG-Y output sampling interval.");
         require(!records.traces.empty() && component >= 0 &&
                     component < static_cast<int>(records.components.size()),
                 "Select an existing raw component before SEG-Y export.");
-        require(std::isfinite(records.dt) && records.dt > 0 && records.dt * 1e6 <= 65535,
+        require(std::isfinite(records.dt) && records.dt > 0, "Invalid source sampling interval.");
+        const double outputDt = options.sampleIntervalSeconds > 0 ? options.sampleIntervalSeconds : records.dt;
+        require(outputDt > 0 && outputDt * 1e6 <= 65535 && (!compatible || outputDt * 1e6 >= 1),
                 "SEG-Y sample interval must be positive and at most 65535 microseconds.");
-        const auto count = records.sampleCount(0);
-        require(count > 0 && count <= 65535, "SEG-Y export requires 1..65535 samples per trace.");
+        require(!compatible || std::abs(outputDt * 1e6 - std::round(outputDt * 1e6)) < 1e-7,
+                "Legacy SEG-Y requires whole-microsecond dt; select 0.5 or 1 ms output sampling.");
+        const auto sourceCount = records.sampleCount(0);
+        require(sourceCount > 0, "SEG-Y export requires nonempty traces.");
+        const double outputCount = outputDt == records.dt ? static_cast<double>(sourceCount)
+            : std::floor((sourceCount - 1) * records.dt / outputDt + 1e-9) + 1;
+        require(std::isfinite(outputCount) && outputCount >= 1 && outputCount <= 65535,
+                "SEG-Y export requires 1..65535 output samples per trace.");
+        const auto count = static_cast<std::size_t>(outputCount);
         require(records.traces.size() <= 100000, "Too many SEG-Y traces.");
         for (const auto &trace : records.traces) {
-            require(trace.channels[component].size() == count, "SEG-Y export requires equal trace lengths.");
+            require(trace.channels[component].size() == sourceCount, "SEG-Y export requires equal trace lengths.");
             require(std::isfinite(trace.startTime) && std::abs(trace.startTime * 1000) <= 32767 &&
                         std::abs(trace.startTime * 1000 - std::round(trace.startTime * 1000)) < 1e-7,
                     "SEG-Y export delay must be representable as whole milliseconds.");
@@ -95,9 +139,25 @@ bool writeSegy(const RecordDataView &records, int component, const std::filesyst
             for (double v : trace.source)
                 millimetres(v);
             for (double v : trace.channels[component])
-                require(std::isfinite(v) && (ieee64 || std::abs(v) <= std::numeric_limits<float>::max()),
-                        "SEG-Y samples must be finite and representable in the selected IEEE precision.");
+                require(std::isfinite(v) && std::isfinite(v * options.sampleGain) &&
+                            (ieee64 || ibm || std::abs(v * options.sampleGain) <= std::numeric_limits<float>::max()),
+                        "SEG-Y samples/multiplier overflow the selected precision.");
         }
+        const auto sample = [&](const TraceView &trace, std::size_t t) {
+            if (outputDt == records.dt) return trace.channels[component][t] * options.sampleGain;
+            const double u = std::clamp(t * outputDt / records.dt, 0.0, static_cast<double>(sourceCount - 1));
+            const auto i = static_cast<std::size_t>(u);
+            return std::lerp(trace.channels[component][i], trace.channels[component][std::min(i + 1, sourceCount - 1)], u - i) * options.sampleGain;
+        };
+        std::size_t underflow = 0;
+        double outputPeak = 0;
+        for (const auto &trace : records.traces)
+            for (std::size_t t = 0; t < count; ++t) {
+                const double value = sample(trace, t);
+                outputPeak = std::max(outputPeak, std::abs(value));
+                if (ibm) underflow += value != 0 && ibmFloat(value) == 0;
+                else if (!ieee64) underflow += value != 0 && static_cast<float>(value) == 0;
+            }
         if (!path.parent_path().empty())
             std::filesystem::create_directories(path.parent_path());
         temporary = path;
@@ -115,38 +175,58 @@ bool writeSegy(const RecordDataView &records, int component, const std::filesyst
             const auto s = prefix + content;
             std::copy_n(s.begin(), std::min<std::size_t>(80, s.size()), text.begin() + (row - 1) * 80);
         };
-        line(1, "SEISWAVE LAB - RAW ELASTIC WAVE RECEIVER RECORDS");
-        line(2, "COMPONENT=" + records.components[component] + " UNITS=" + records.units);
+        line(1, "SEISWAVE LAB - ELASTIC WAVE RECEIVER RECORDS");
+        const auto units = options.sampleGain == 1 ? records.units : "scaled(" + records.units + ")";
+        line(2, "COMPONENT=" + records.components[component] + " UNITS=" + units);
         std::ostringstream dt;
-        dt << std::setprecision(17) << records.dt;
+        dt << std::setprecision(17) << outputDt;
         line(3, "EXACT DT (SECONDS)=" + dt.str());
-        line(4, "SEG-Y REV 2.0, BIG ENDIAN, IEEE " + std::string(ieee64 ? "64" : "32") + " BIT SAMPLES");
-        line(5, "EXACT DT: BINARY HEADER BYTES 3273-3280 (IEEE64 MICROSECONDS)");
+        line(4, "SEG-Y REV " + std::string(compatible ? "1.0" : "2.0") + ", BIG ENDIAN, " +
+                    (ibm ? "IBM32" : ieee64 ? "IEEE64" : "IEEE32"));
+        line(5, compatible ? "DT: BINARY BYTES 3217-3218; TRACE BYTES 117-118 (MICROSECONDS)"
+                           : "EXACT DT: BINARY HEADER BYTES 3273-3280 (IEEE64 MICROSECONDS)");
         line(6, "COORDINATES/ELEVATIONS IN METRES; SCALARS=-1000; Z POSITIVE DOWN");
-        line(7, "NO DISPLAY GAIN, AGC OR NORMALIZATION APPLIED; TIME ZERO INCLUDED");
+        line(7, "NO DISPLAY AGC OR TRACE NORMALIZATION; FIRST INPUT SAMPLE INCLUDED");
         line(8, "X IS INLINE, Y CROSSLINE; ONE VELOCITY COMPONENT PER FILE");
+        std::ostringstream gain; gain << std::setprecision(17) << options.sampleGain;
+        line(9, "EXPORT_MULTIPLIER=" + gain.str() + "; ORIGINAL_VALUE=STORED_VALUE/MULTIPLIER");
+        line(10, "FFID=1; CHANNEL=1..N; CDP=1..N (ORDINAL, NOT A BINNED CMP GRID)");
+        std::ostringstream sourceDt; sourceDt << std::setprecision(17) << records.dt;
+        line(11, "SOURCE_DT_SECONDS=" + sourceDt.str() + "; RESAMPLING=" + (outputDt == records.dt ? "NONE" : "LINEAR"));
+        std::ostringstream peak; peak << std::setprecision(17) << outputPeak;
+        line(12, "OUTPUT_PEAK=" + peak.str() + "; UNDERFLOWED_SAMPLES=" + std::to_string(underflow));
+        line(13, compatible ? "TRACE_ID=1 LIVE SEISMIC; COMPONENT IDENTIFIED ON C 2 / FILENAME"
+                            : "TRACE_ID: 12=VERTICAL, 14=INLINE; COMPONENT IDENTIFIED ON C 2");
         line(40, "END TEXTUAL HEADER");
+        if (ibm)
+            for (auto &c : text) c = c < 128 ? ebcdic[c] : ebcdic['?'];
         write(out, text);
         Bytes binary(400);
         const auto interval =
-            static_cast<std::uint16_t>(std::clamp(std::llround(records.dt * 1e6), 1LL, 65535LL));
+            static_cast<std::uint16_t>(std::clamp(std::llround(outputDt * 1e6), 1LL, 65535LL));
         put(binary, 12, std::min<std::size_t>(65535, records.traces.size()), 2);
         put(binary, 16, interval, 2);
         put(binary, 18, interval, 2);
         put(binary, 20, count, 2);
         put(binary, 22, count, 2);
-        put(binary, 24, ieee64 ? 6 : 5, 2);
+        put(binary, 24, ibm ? 1 : ieee64 ? 6 : 5, 2);
+        put(binary, 26, 1, 2);
+        put(binary, 28, 1, 2); // As recorded; do not claim CMP binning.
         put(binary, 54, 1, 2);
-        put(binary, 60, records.traces.size(), 4);
-        put(binary, 68, count, 4);
-        put(binary, 72, std::bit_cast<std::uint64_t>(records.dt * 1e6), 8);
-        put(binary, 80, std::bit_cast<std::uint64_t>(records.dt * 1e6), 8);
-        put(binary, 88, count, 4);
-        put(binary, 96, 0x01020304, 4);
-        binary[300] = 2;
+        if (!compatible) {
+            put(binary, 60, records.traces.size(), 4);
+            put(binary, 68, count, 4);
+            put(binary, 72, std::bit_cast<std::uint64_t>(outputDt * 1e6), 8);
+            put(binary, 80, std::bit_cast<std::uint64_t>(outputDt * 1e6), 8);
+            put(binary, 88, count, 4);
+            put(binary, 96, 0x01020304, 4);
+        }
+        binary[300] = compatible ? 1 : 2;
         put(binary, 302, 1, 2);
-        put(binary, 312, records.traces.size(), 8);
-        put(binary, 320, 3600, 8);
+        if (!compatible) {
+            put(binary, 312, records.traces.size(), 8);
+            put(binary, 320, 3600, 8);
+        }
         write(out, binary);
         for (std::size_t r = 0; r < records.traces.size(); ++r) {
             const auto &trace = records.traces[r];
@@ -155,8 +235,16 @@ bool writeSegy(const RecordDataView &records, int component, const std::filesyst
             put(header, 4, r + 1, 4);
             put(header, 8, 1, 4);
             put(header, 12, r + 1, 4);
+            put(header, 16, 1, 4);
+            put(header, 20, r + 1, 4);
+            put(header, 24, 1, 4);
             const auto name = records.components[component];
-            put(header, 28, name == "Vz" ? 12 : name == "Vx" ? 14 : 1, 2);
+            put(header, 28, compatible ? 1 : name == "Vz" ? 12 : name == "Vx" ? 14 : 1, 2);
+            put(header, 30, 1, 2); put(header, 32, 1, 2); put(header, 34, 1, 2);
+            const double dx = trace.position[0] - trace.source[0], dy = trace.position[1] - trace.source[1];
+            const double offset = std::copysign(std::hypot(dx, dy), dx != 0 ? dx : dy);
+            require(std::abs(offset) <= std::numeric_limits<std::int32_t>::max(), "SEG-Y offset exceeds Int32 metres.");
+            put(header, 36, static_cast<std::uint32_t>(static_cast<std::int32_t>(std::llround(offset))), 4);
             put(header, 40, static_cast<std::uint32_t>(millimetres(-trace.position[2])), 4);
             put(header, 48, static_cast<std::uint32_t>(millimetres(trace.source[2])), 4);
             put(header, 68, static_cast<std::uint16_t>(-1000), 2);
@@ -169,12 +257,16 @@ bool writeSegy(const RecordDataView &records, int component, const std::filesyst
             put(header, 108, static_cast<std::uint16_t>(std::llround(trace.startTime * 1000)), 2);
             put(header, 114, count, 2);
             put(header, 116, interval, 2);
-            put(header, 202, records.units == "m/s" ? 6 : records.units == "Pa" ? 1 : 0, 2);
+            put(header, 180, static_cast<std::uint32_t>(millimetres((trace.source[0] + trace.position[0]) * .5)), 4);
+            put(header, 184, static_cast<std::uint32_t>(millimetres((trace.source[1] + trace.position[1]) * .5)), 4);
+            put(header, 202, options.sampleGain != 1 ? 0 : records.units == "m/s" ? 6 : records.units == "Pa" ? 1 : 0, 2);
             write(out, header);
             Bytes samples(count * (ieee64 ? 8 : 4));
             for (std::size_t t = 0; t < count; ++t) {
-                const auto v = trace.channels[component][t];
-                if (ieee64)
+                const auto v = sample(trace, t);
+                if (ibm)
+                    put(samples, t * 4, ibmFloat(v), 4);
+                else if (ieee64)
                     put(samples, t * 8, std::bit_cast<std::uint64_t>(v), 8);
                 else
                     put(samples, t * 4, std::bit_cast<std::uint32_t>(static_cast<float>(v)), 4);
@@ -183,13 +275,7 @@ bool writeSegy(const RecordDataView &records, int component, const std::filesyst
         }
         out.close();
         require(static_cast<bool>(out), "SEG-Y final flush failed.");
-#ifdef _WIN32
-        require(MoveFileExW(temporary.c_str(), path.c_str(),
-                            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) != 0,
-                "Cannot replace the SEG-Y destination file.");
-#else
-        std::filesystem::rename(temporary, path);
-#endif
+        SeisWave::replaceCompletedFile(temporary,path);
         return true;
     } catch (const std::exception &ex) {
         if (!temporary.empty()) {
@@ -251,9 +337,23 @@ bool readSegy(const std::filesystem::path &path, ImportedRecords &destination, s
         ImportedRecords result;
         std::size_t decoded = 0;
         int commonId = -1, commonUnit = -1;
-        const std::string textual(text.begin(), text.end());
-        if (textual.find("UNITS=m/s") != std::string::npos)
-            result.units = "m/s";
+        std::string textual(text.begin(), text.end());
+        if (text.front() == ebcdic['C']) {
+            for (std::size_t n = 0; n < text.size(); ++n) {
+                const auto found = std::find(std::begin(ebcdic), std::end(ebcdic), text[n]);
+                textual[n] = found == std::end(ebcdic) ? '?' : static_cast<char>(found - std::begin(ebcdic));
+            }
+        }
+        const bool ownText = textual.find("SEISWAVE LAB") != std::string::npos;
+        const auto token = [&](const char *key) {
+            const auto row = textual.substr(80, 80);
+            const auto start = row.find(key);
+            if (start == std::string::npos) return std::string();
+            const auto begin = start + std::char_traits<char>::length(key);
+            return row.substr(begin, row.find(' ', begin) - begin);
+        };
+        if (ownText && !token("UNITS=").empty())
+            result.units = token("UNITS=");
         while (offset < end) {
             require(result.traces.size() < 4096, "SEG-Y import exceeds 4096 trace positions.");
             require(end - offset >= 240, "Incomplete SEG-Y trace header.");
@@ -333,6 +433,8 @@ bool readSegy(const std::filesystem::path &path, ImportedRecords &destination, s
         }
         require(!result.traces.empty(), "SEG-Y contains no data traces.");
         result.component = commonId == 12 ? "Vz" : commonId == 14 ? "Vx" : "Amplitude";
+        if (ownText && !token("COMPONENT=").empty())
+            result.component = token("COMPONENT=");
         const char *units[]{"raw", "Pa", "V", "mV", "A", "m", "m/s", "m/s2", "N", "W"};
         if (commonUnit > 0 && commonUnit < 10)
             result.units = units[commonUnit];

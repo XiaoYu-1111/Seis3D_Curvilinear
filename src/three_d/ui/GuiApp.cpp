@@ -20,6 +20,7 @@
 #include "implot.h"
 #include "Seis3D/ReceiverIo.hpp"
 #include "Seis3D/VtsWriter.hpp"
+#include "Seis3D/ModelIo3D.hpp"
 #include <algorithm>
 #include <bit>
 #include <array>
@@ -69,7 +70,7 @@ std::filesystem::path executableDirectory3D(const char* argv0) {
 }
 
 // Offers native file/folder selection while leaving the editable UTF-8 path available on every platform.
-void browseSave3D(char* value,std::size_t capacity,bool vts) {
+void browseSave3D(char* value,std::size_t capacity,bool vts,bool save=true) {
 #ifdef _WIN32
     const auto initial=fromUtf8Path3D(value);
     std::vector<wchar_t> buffer(32768,L'\0');
@@ -77,10 +78,10 @@ void browseSave3D(char* value,std::size_t capacity,bool vts) {
     const auto directory=initial.parent_path().wstring();
     OPENFILENAMEW dialog{};dialog.lStructSize=sizeof(dialog);dialog.lpstrFile=buffer.data();dialog.nMaxFile=static_cast<DWORD>(buffer.size());
     dialog.lpstrInitialDir=directory.c_str();dialog.lpstrFilter=vts?L"VTK StructuredGrid (*.vts)\0*.vts\0\0":L"Receiver CSV (*.csv)\0*.csv\0\0";
-    dialog.lpstrDefExt=vts?L"vts":L"csv";dialog.Flags=OFN_OVERWRITEPROMPT|OFN_PATHMUSTEXIST|OFN_NOCHANGEDIR;
-    if(GetSaveFileNameW(&dialog)) { const auto path=utf8Path3D(buffer.data());std::snprintf(value,capacity,"%s",path.c_str()); }
+    dialog.lpstrDefExt=vts?L"vts":L"csv";dialog.Flags=(save?OFN_OVERWRITEPROMPT:OFN_FILEMUSTEXIST)|OFN_PATHMUSTEXIST|OFN_NOCHANGEDIR;
+    if(save?GetSaveFileNameW(&dialog):GetOpenFileNameW(&dialog)) { const auto path=utf8Path3D(buffer.data());std::snprintf(value,capacity,"%s",path.c_str()); }
 #else
-    (void)value;(void)capacity;(void)vts;
+    (void)value;(void)capacity;(void)vts;(void)save;
 #endif
 }
 
@@ -112,7 +113,7 @@ struct Workbench3D {
     CudaDeviceInventory3D cudaDevices;
     std::vector<std::string> graphicsAdapters;
     bool autoFitGeometry{true};
-    bool exportThreeComponents{};
+    std::array<bool,3> receiverExportComponents{false,false,true};
     std::array<bool,7> panels{true,true,true,true,true,true,true};
     static constexpr const char* panelNames[]{"Controls","Numerical diagnostics","Spatial exploration","Inline X-Z","Crossline Y-Z","Depth X-Y","Receiver records"};
     void restoreWorkspace(){panels.fill(true);resetLayout=true;}
@@ -142,7 +143,56 @@ struct Workbench3D {
     double meanStepMs{};
     float frameBudgetMs{16.0f};
     std::string error,status{"Ready. Build a model, then Run or Step."};
-    std::array<char,2048> vtsPath{},csvPath{};
+    std::array<char,2048> vtsPath{},csvPath{},modelPath{};
+    bool snapshotFollowDisplay{true};
+    VtsExportOptions3D snapshotOptions{{false,false,true,false,false,false,false,false,false,false,false},true,false};
+    bool pendingModelEdits() const {
+        return dirty||edited!=simulation->parameters()||computeSettings!=activeComputeSettings||
+            selectedBackend!=static_cast<int>(simulation->backendInfo().kind);
+    }
+    void saveModel() {
+        error.clear();
+        if(pendingModelEdits()){error="Apply pending parameters before saving the model.";return;}
+        if(writeModelVts3D(*simulation,fromUtf8Path3D(modelPath.data()),activeComputeSettings,error))
+            status="Reproducible 3D model saved. Import starts a new simulation at t=0.";
+    }
+    bool loadModel() {
+        ModelDocument3D model;error.clear();
+        if(!readModelVts3D(fromUtf8Path3D(modelPath.data()),model,error))return false;
+        const auto previous=edited;const auto settings=computeSettings;const auto backend=selectedBackend;const auto wasDirty=dirty;
+        edited=model.parameters;computeSettings=model.compute;computeSettings.cudaDevice=-1;
+        const bool fallback=model.backend==BackendKind3D::Cuda&&!cudaAvailability.available;
+        selectedBackend=static_cast<int>(fallback?BackendKind3D::Cpu:model.backend);
+        if(!rebuild(true)){edited=previous;computeSettings=settings;selectedBackend=backend;dirty=wasDirty;return false;}
+        status=fallback?"Model restored at t=0 using CPU; CUDA unavailable.":"3D model restored at t=0; dt and receiver layout recalculated.";
+        return true;
+    }
+    VtsExportOptions3D selectedSnapshotOptions() const {
+        auto options=snapshotOptions;
+        if(snapshotFollowDisplay){options.fields.fill(false);constexpr int mapping[]{2,0,1,3,4};options.fields[mapping[std::clamp(visuals.component,0,4)]]=true;options.includeVelocityVector=false;}
+        return options;
+    }
+    void snapshotControls() {
+        auto options=selectedSnapshotOptions();
+        if(ImGui::Checkbox(language3D()?"跟随当前显示分量":"Follow displayed component",&snapshotFollowDisplay)&&!snapshotFollowDisplay)snapshotOptions=options;
+        if(!snapshotFollowDisplay) {
+            constexpr const char* names[]{"Vx","Vy","Vz","|V|","Pressure","Sxx","Syy","Szz","Sxy","Sxz","Syz"};
+            for(int i=0;i<11;++i){if(i%3)ImGui::SameLine();ImGui::Checkbox(names[i],&snapshotOptions.fields[i]);}
+            ImGui::Checkbox(language3D()?"三分量速度矢量":"Velocity vector (3 components)",&snapshotOptions.includeVelocityVector);
+        }
+        ImGui::Checkbox(language3D()?"附带物性参数":"Include material properties",&snapshotOptions.includeMaterial);
+    }
+    void modelFiles() {
+        ImGui::TextWrapped("%s",language3D()?"保存几何、物性及完整模拟参数；导入后从零时刻重建。":"Save geometry, material and full simulation parameters; import restarts at t=0.");
+        ImGui::SetNextItemWidth(-1);ImGui::InputText("##modelPath",modelPath.data(),modelPath.size());
+        if(ImGui::Button(language3D()?"选择模型文件...":"Choose model..."))browseSave3D(modelPath.data(),modelPath.size(),true,false);
+        if(ImGui::Button(language3D()?"模型另存为...":"Save model as..."))browseSave3D(modelPath.data(),modelPath.size(),true);
+        const bool pending=pendingModelEdits();ImGui::BeginDisabled(pending);
+        if(ImGui::Button(language3D()?"保存模型 VTS":"Save model VTS",{-1,0}))saveModel();ImGui::EndDisabled();
+        if(pending)ImGui::TextWrapped("%s",language3D()?"参数尚未应用，请先重建再保存。":"Apply pending edits before saving.");
+        if(ImGui::Button(language3D()?"导入并重建模型":"Import and rebuild model",{-1,0}))(void)loadModel();
+        ImGui::TextWrapped("%s",language3D()?"模型文件用于复现；波场快照用于分析，不是续算检查点。":"Model files reproduce a run; wavefield snapshots are analysis data, not restart checkpoints.");
+    }
 
     Workbench3D() {
         refreshComputeDevices();
@@ -371,12 +421,14 @@ struct Workbench3D {
     void exportSnapshot() {
         error.clear();
         try {
-            if(writeVts(simulation->snapshot(),fromUtf8Path3D(vtsPath.data()),error))status="VTS snapshot exported at current simulation time.";
+            const auto options=selectedSnapshotOptions();
+            if(!options.includeVelocityVector&&std::none_of(options.fields.begin(),options.fields.end(),[](bool v){return v;})){error="Select at least one wavefield component.";return;}
+            if(writeVts(simulation->snapshot(),fromUtf8Path3D(vtsPath.data()),options,error))status="VTS snapshot exported at current simulation time.";
         } catch(const std::exception& ex) {error=ex.what();}
     }
     void exportTraces() {
         error.clear();
-        try { if(writeReceiversCsv(*simulation,fromUtf8Path3D(csvPath.data()),error,exportThreeComponents))status="Time-zero-inclusive receiver CSV exported."; }
+        try { if(writeReceiversCsv(*simulation,fromUtf8Path3D(csvPath.data()),receiverExportComponents,error))status="Time-zero-inclusive receiver CSV exported."; }
         catch(const std::exception& ex) {error=ex.what();}
     }
 
@@ -875,14 +927,17 @@ struct Workbench3D {
             }
             if(controlCategory==4&&ImGui::BeginTabItem(label3D("Export"),nullptr,requestedTab==3?ImGuiTabItemFlags_SetSelected:0)) {
                 ImGui::TextColored(functionColor3D(FunctionRole3D::Export),tr3D("03   DATA EXPORT"));
-                if(group("Model & wavefield VTS",true)) {
+                if(group("Reproducible model VTS",true))modelFiles();
+                if(group("Wavefield snapshot VTS",true)) {
+                    snapshotControls();
                     ImGui::TextWrapped(tr3D("Full physical mesh and raw SI fields. Display gain is excluded."));
                     ImGui::SetNextItemWidth(-1);ImGui::InputText("##vtsPath",vtsPath.data(),vtsPath.size());
                     if(ImGui::Button(label3D("Browse VTS...")))browseSave3D(vtsPath.data(),vtsPath.size(),true);
                     if(functionButton3D("Export current snapshot",FunctionRole3D::Export,{-1,0}))exportSnapshot();
                 }
                 if(group("Receiver CSV",true)) {
-                    ImGui::Checkbox(label3D("Export raw Vx / Vy / Vz"),&exportThreeComponents);
+                    ImGui::TextUnformatted(language3D()?"接收记录分量（可多选）":"Receiver components (multiple)");
+                    for(int c=0;c<3;++c){if(c)ImGui::SameLine();constexpr const char* names[]{"Vx##receiver","Vy##receiver","Vz##receiver"};ImGui::Checkbox(names[c],&receiverExportComponents[c]);}
                     ImGui::SetNextItemWidth(-1);ImGui::InputText("##csvPath",csvPath.data(),csvPath.size());
                     if(ImGui::Button(label3D("Browse CSV...")))browseSave3D(csvPath.data(),csvPath.size(),false);
                     if(functionButton3D("Export all receiver samples",FunctionRole3D::Export,{-1,0}))exportTraces();
@@ -1191,6 +1246,7 @@ int runWorkbench3D(int argc,char** argv) {
         if(modelDisplaySmoke){app.edited.maxSteps=0;app.edited.duration=.12;app.edited.dominantFrequency=30;app.edited.sourceZ=20;app.visuals.autoRange=true;app.visuals.showGrid=false;}
         const auto sessionExportRoot=smoke?outputRoot3D()/"validation/three-d-smoke":outputRoot3D();
         if(smoke)std::filesystem::create_directories(sessionExportRoot);
+        std::snprintf(app.modelPath.data(),app.modelPath.size(),"%s",utf8Path3D(sessionExportRoot/"curvilinear_model.vts").c_str());
         std::snprintf(app.vtsPath.data(),app.vtsPath.size(),"%s",utf8Path3D(sessionExportRoot/"curvilinear_snapshot.vts").c_str());
         std::snprintf(app.csvPath.data(),app.csvPath.size(),"%s",utf8Path3D(sessionExportRoot/"receiver_traces.csv").c_str());
         if(!app.rebuild(true)||!app.renderer.initialize(executableDirectory3D(argv[0])/"shaders",app.error)){std::cerr<<app.error<<'\n';result=6;}

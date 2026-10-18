@@ -66,10 +66,10 @@ def main():
             pixels=im.convert('RGB').tobytes()
         row.update(png=png.name,sha256=digest(png),pixel_sha256=hashlib.sha256(pixels).hexdigest())
         shutil.copy2(png,DOCS/'images'/png.name)
-    metadata=dict(version='0.16.0',date='2026-10-16',native_size=[2560,1494],font_px=20,language='zh-CN',theme='Paper Sand',pixel_processing='Versioned publication PNG; no crop, resize or recolor during packaging',captures=rows)
-    (DOCS.parent/'capture-manifest.json').write_text(json.dumps(metadata,ensure_ascii=False,indent=2),encoding='utf-8')
+    metadata=dict(version='0.16.0',date='2026-10-18',native_size=[2560,1494],font_px=20,language='zh-CN',theme='Paper Sand',pixel_processing='Versioned publication PNG; no crop, resize or recolor during packaging',captures=rows)
     shutil.copy2(SHOTS/'dispersion-comparison.png',DOCS/'images/dispersion-comparison.png')
 
+    selected_docs={'PROJECT_MANUAL.md','USER_GUIDE.md','MODEL_AND_WAVEFIELD_IO.md','SEGY_AND_RECORDS.md','HEXO_MATH.md'}
     def convert(text,source):
         def link(match):
             bang,label,target=match.groups()
@@ -77,10 +77,12 @@ def main():
             path,_,anchor=target.partition('#');resolved=(source.parent/path).resolve()
             if not resolved.is_file(): raise ValueError(f'Missing local reference: {source}: {target}')
             if resolved.suffix.lower() in ['.png','.jpg','.jpeg']:
-                name=resolved.name
-                if not (DOCS/'images'/name).is_file(): shutil.copy2(resolved,DOCS/'images'/name)
+                name=('two-d-' if resolved.parent.name=='two-d' else '')+resolved.name
+                shutil.copy2(resolved,DOCS/'images'/name)
                 dest='images/'+name
-            elif resolved.suffix.lower()=='.csv' and resolved.is_relative_to(ROOT/'resources/examples/elevation'):
+            elif resolved.parent==ROOT/'docs' and resolved.name in selected_docs:
+                dest=resolved.name
+            elif resolved.suffix.lower()=='.csv'  and resolved.is_relative_to(ROOT/'resources/examples/elevation'):
                 dest='examples/elevation/'+resolved.name
                 (DOCS/'examples/elevation').mkdir(parents=True,exist_ok=True)
                 shutil.copy2(resolved,DOCS/dest)
@@ -95,28 +97,51 @@ def main():
     body=convert(source_text,source)
     assert re.findall(r'^## (.+)$',body,re.M)==['1 背景','2 原理','3 实现过程','4 界面介绍','5 附录']
     (DOCS/'PROJECT_MANUAL.md').write_text(body,encoding='utf-8')
-    gallery=['# 界面与模拟过程图集','', '18 张 2560×1494 完整界面图，采集日期为 2026 年 10 月 16 日。时间为实际完整步骤对应时刻，AGC/单道视图不改变原始记录。算例物性、震源和边界说明见[主文附录 E](PROJECT_MANUAL.md)。不同会话、自动色标或 AGC 视图不能直接比较绝对幅度；初始界面不构成动态计算精度证据。','']
+    for name in sorted(selected_docs-{'PROJECT_MANUAL.md'}):
+        page=ROOT/'docs'/name
+        (DOCS/name).write_text(convert(page.read_text(encoding='utf-8'),page),encoding='utf-8')
+    rows2d=list(csv.DictReader((SHOTS/'two-d/capture.tsv').open(encoding='utf-8'),delimiter='\t'))
+    assert len(rows2d)==13
+    for row in rows2d:
+        png=SHOTS/'two-d'/(row['image']+'.png')
+        with Image.open(png) as im:
+            assert im.size==(2560,1494)
+            pixel_hash=hashlib.sha256(im.convert('RGB').tobytes()).hexdigest()
+        shutil.copy2(png,DOCS/'images'/('two-d-'+png.name))
+        row.update(png='two-d-'+png.name,sha256=digest(png),pixel_sha256=pixel_hash)
+    metadata['two_d_captures']=rows2d
+    metadata['two_d_theme']='Warm Ivory'
+    metadata['home_capture']={'png':'two-d-home.png','native_size':[2560,1494],'sha256':digest(SHOTS/'two-d/home.png'),'content':'Program-drawn functional illustration; no solver state'}
+    metadata['total_native_screenshots']=len(rows)+len(rows2d)+1
+    (DOCS.parent/'capture-manifest.json').write_text(json.dumps(metadata,ensure_ascii=False,indent=2),encoding='utf-8')
+    gallery=['# 界面与模拟过程图集' ,'', '32 张 2560×1494 原生完整客户区图，采集日期为 2026 年 10 月 18 日；不裁剪、不缩放。18 张为三维工作流，13 张为二维流程，另有主页。时间为实际完整步骤对应时刻，AGC/单道视图不改变原始记录。算例物性、震源和边界说明见[主文附录 E](PROJECT_MANUAL.md)。不同会话、自动色标或 AGC 视图不能直接比较绝对幅度；初始界面不构成动态计算精度证据。','']
     image_labels={Path(target).stem:label for bang,label,target in TOKEN.findall(source_text) if bang}
     for number,row in enumerate(rows,1):
         label=image_labels[row['image']]
         gallery += [f"## {number}. {label}",'',f"{row['backend']} | {row['nx']}×{row['ny']}×{row['nz']} | h={row['spacing_m']} m | f₀={row['f0_hz']} Hz | 第 {row['step']} 步 | t={float(row['time_s']):.6f} s | dt={float(row['dt_s'])*1000:.6f} ms | 参考 PPW={float(row['ppw']):.3f} | {row['receivers']} 位置×{row['samples']} 样本",'',f"![{label}](images/{row['png']})",'']
+    labels2d={'model':'二维建模','workbench':'并排参数与运行进度','completed':'模拟完成与接收记录','model-io':'模型保存与载入','export':'波场分量导出','segy':'SEG-Y 兼容导出','help':'横向快捷键帮助','display':'独立图层与配色','record-options':'记录显示参数','layers':'分层介质编辑','terrain':'高程剖面导入','source-explosion':'爆炸矩源波场','elevation-examples':'山丘与沟谷示例'}
+    for number,row in enumerate(rows2d,len(rows)+1):
+        label=labels2d[row['image']]
+        gallery += [f"## {number}. {label}",'',f"{row['backend']} | {row['nx']}×{row['nz']} | h={row['spacing_m']} m | f₀={row['f0_hz']} Hz | 第 {row['step']} 步 | t={float(row['time_s']):.6f} s | dt={float(row['dt_s'])*1000:.6f} ms | 记录间隔={float(row['record_dt_s'])*1000:.3f} ms",'',f"![{label}](images/{row['png']})",'']
+    gallery += ['## 32. 曲面二维与三维入口','','![主页，程序绘制的功能示意](images/two-d-home.png)','']
     (DOCS/'SCREENSHOT_GALLERY.md').write_text('\n'.join(gallery),encoding='utf-8')
     for name in ['LICENSE','THIRD_PARTY_NOTICES.md']: shutil.copy2(ROOT/name,DOCS/name)
-    (DOCS/'README.md').write_text('# SeisWave Lab 图文说明\n\n[完整说明](PROJECT_MANUAL.md) 按背景、原理、实现过程、界面介绍和附录组织，包含数学推导、算例条件、数据定义与参考文献。[界面与模拟过程图集](SCREENSHOT_GALLERY.md) 收录18张完整界面图，正文另有内点频散分析图，图像均在 images 目录。\n\n本文区分数学模型、当前实现和已有证据范围，不以运行完成或后端一致代替物理精度验证。普通 Markdown 阅读器需启用数学公式渲染。软件许可和来源见随附 LICENSE 与 THIRD_PARTY_NOTICES.md。\n',encoding='utf-8')
+    (DOCS/'README.md').write_text('# SeisWave Lab 图文说明\n\n[用户手册](USER_GUIDE.md) 提供实际操作与数据复现；[完整说明](PROJECT_MANUAL.md) 按背景、原理、实现过程、界面介绍和附录组织，包含数学推导、算例条件、数据定义与参考文献。[界面与模拟过程图集](SCREENSHOT_GALLERY.md) 收录32张原生完整界面图，正文另有内点频散分析图，图像均在 images 目录。\n\n本文区分数学模型、当前实现和已有证据范围，不以运行完成或后端一致代替物理精度验证。普通 Markdown 阅读器需启用数学公式渲染。软件许可和来源见随附 LICENSE 与 THIRD_PARTY_NOTICES.md。\n',encoding='utf-8')
 
-    doc_files=['PROJECT_MANUAL.md','SCREENSHOT_GALLERY.md','README.md','LICENSE','THIRD_PARTY_NOTICES.md']
+    doc_files=sorted(selected_docs)+['SCREENSHOT_GALLERY.md','README.md','LICENSE','THIRD_PARTY_NOTICES.md']
     for resource in sorted((ROOT/'resources/examples/elevation').iterdir()):
         if resource.suffix.lower() not in {'.csv','.md'}: continue
         relative='examples/elevation/'+resource.name
         (DOCS/'examples/elevation').mkdir(parents=True,exist_ok=True)
         shutil.copy2(resource,DOCS/relative)
         doc_files.append(relative)
-    doc_files += ['images/'+row['png'] for row in rows]+['images/dispersion-comparison.png']
+    doc_files += ['images/'+row['png'] for row in rows+rows2d]+['images/dispersion-comparison.png']
     # Additional published UI images (e.g. the 2D/3D home screen) are not part
     # of the original 18-shot 3D numerical capture series or its metadata.
-    for bang,label,target in TOKEN.findall(body):
-        if bang and target.startswith('images/') and target not in doc_files:
-            doc_files.append(target)
+    for page in selected_docs|{'SCREENSHOT_GALLERY.md'}:
+        for bang,label,target in TOKEN.findall((DOCS/page).read_text(encoding='utf-8')):
+            if bang and target.startswith('images/') and target not in doc_files:
+                doc_files.append(target)
     (github/'_posts').mkdir(parents=True,exist_ok=True)
     hexo_post.parent.mkdir(parents=True,exist_ok=True)
     for destination in [github_assets,hexo_post]:
@@ -128,7 +153,7 @@ def main():
     for relative in doc_files:
         if relative.startswith('images/'):
             shutil.copy2(DOCS/relative,hexo_post/Path(relative).name)
-    header='---\ntitle: '+json.dumps(TITLE,ensure_ascii=False)+'\ndate: 2026-10-16\nupdated: 2026-10-17\ntags: [Seismology, Curvilinear Grid, Elastic Wave, CUDA, Finite Difference]\ncategories: [计算地球物理, 数值模拟]\nmathjax: true\ntoc: true\n'
+    header='---\ntitle: '+json.dumps(TITLE,ensure_ascii=False)+'\ndate: 2026-10-16\nupdated: 2026-10-18\ntags: [Seismology, Curvilinear Grid, Elastic Wave, CUDA, Finite Difference]\ncategories: [计算地球物理, 数值模拟]\nmathjax: true\ntoc: true\n'
     # No guessed remote URL or domain: relative_url supports project Pages baseurl.
     def github_link(m):
         bang,label,target=m.groups()
@@ -144,7 +169,7 @@ def main():
     (hexo/'source/_posts/seis3d-curvilinear.md').write_text(header+'---\n\n'+TOKEN.sub(hexo_link,body),encoding='utf-8')
     (BLOG/'README.md').write_text('''# GitHub Pages / Hexo 发布包
 
-两版均由同一份正文生成，依次为背景、原理、实现过程、界面介绍和附录。数学推导、算例条件、证据边界及参考文献一致，文章修订日期为2026年10月17日。发布资源不包含开发验证日志、构建命令、源码索引或计算中间文件。
+两版均由同一份正文生成，依次为背景、原理、实现过程、界面介绍和附录。数学推导、算例条件、证据边界及参考文献一致，文章修订日期为2026年10月18日。发布资源不包含开发验证日志、构建命令、源码索引或计算中间文件。
 
 ## GitHub Pages（Jekyll）
 
@@ -155,6 +180,8 @@ def main():
 把 hexo/source/_posts 的文章和同名 seis3d-curvilinear 资源目录合并到站点 source/_posts。正文图片采用 `![说明](01-model.png)`，PNG 直接放在 seis3d-curvilinear 目录中。原 images 子目录仍供附带的离线说明使用，非图像附件链接保留 asset_link。
 
 在 _config.yml 设置 post_asset_folder: true。使用 hexo-renderer-marked 时，同时配置 marked.prependRoot: true 和 marked.postAsset: true，使裸文件名解析到文章同名资源目录，兼顾正文及列表页。该配置依据 https://hexo.io/docs/asset-folders 。公式与 Jekyll 版采用相同行内及独立定界符，请启用支持这些定界符、aligned 环境和 tag 编号的 MathJax/KaTeX 配置及 Markdown 渲染器，避免普通 Markdown 先消耗公式反斜线；mathjax: true 不等于已经安装数学渲染插件。
+
+若使用 NexT 和旧 kramed 导致公式不显示，可采用已验证的构建时 SVG 配置，见[数学渲染修复说明](hexo/source/_posts/seis3d-curvilinear/HEXO_MATH.md)。该方案使用 hexo-renderer-markdown-it 7.1.1 与 markdown-it-mathjax3 5.2.0，并关闭主题重复的前端数学引擎。
 
 复制到现有站点即可本地预览；本工具不改站点配置、不覆盖主题，也不执行推送或发布。站点主题的最终数学/页面渲染需在该站点预览。已检查本包 Markdown 引用、图像存在性、PNG 像素摘要和原生分辨率。
 
@@ -178,7 +205,7 @@ assets 下的 PROJECT_MANUAL.md / SCREENSHOT_GALLERY.md 为普通相对路径 Ma
         if bang and not path.startswith(('http:','https:')):
             assert Path(path).name==path and (hexo_post/path).is_file(),path
     assert body.count('$$')%2==0 and body.count('```')%2==0,'Unbalanced math/code delimiters'
-    report=dict(updated='2026-10-17',sections=5,appendices=8,native_screenshots=len(rows),native_size=[2560,1494],markdown_pages_checked=sum(f.endswith('.md') for f in doc_files),github_article='github-pages/_posts/2026-10-16-seis3d-curvilinear.md',hexo_article='hexo/source/_posts/seis3d-curvilinear.md',hexo_image_format='markdown-bare-filename',pixel_hashes_verified=True)
+    report=dict(updated='2026-10-18',sections=5,appendices=8,native_screenshots=len(rows)+len(rows2d)+1,native_3d=len(rows),native_2d=len(rows2d),native_size=[2560,1494],markdown_pages_checked=sum(f.endswith('.md') for f in doc_files),github_article='github-pages/_posts/2026-10-16-seis3d-curvilinear.md',hexo_article='hexo/source/_posts/seis3d-curvilinear.md',hexo_image_format='markdown-bare-filename',pixel_hashes_verified=True)
     report_path=OUTPUT/'maintenance/package-validation.json'
     report_path.parent.mkdir(parents=True,exist_ok=True)
     report_path.write_text(json.dumps(report,ensure_ascii=False,indent=2),encoding='utf-8')

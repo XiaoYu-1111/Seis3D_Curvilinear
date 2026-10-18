@@ -13,6 +13,19 @@ int main(int argc, char **argv) {
         const auto folder = std::filesystem::path(SEIS3D_OUTPUT_ROOT) / "segy-validation";
         std::filesystem::create_directories(folder);
         std::string error;
+        if (argc >= 6 && std::string(argv[1]) == "--legacy") {
+            SeisWave::ImportedRecords records;
+            check(SeisWave::readSegy(std::filesystem::path(argv[2]), records, error), error);
+            SeisWave::SegyExportOptions options;
+            check(std::string(argv[4]) == "ibm" || std::string(argv[4]) == "ieee", "Select ibm or ieee");
+            options.profile = std::string(argv[4]) == "ibm" ? SeisWave::SegyExportProfile::LegacyIbm32
+                                                         : SeisWave::SegyExportProfile::CompatibleIeee32;
+            options.sampleGain = std::stod(argv[5]);
+            options.sampleIntervalSeconds = argc > 6 ? std::stod(argv[6]) * .001 : 0;
+            check(SeisWave::writeSegy(records.view(1), 0, std::filesystem::path(argv[3]), error, options), error);
+            std::cout << "Converted legacy SEG-Y; gain=" << options.sampleGain << '\n';
+            return 0;
+        }
         if (argc > 1) {
             SeisWave::ImportedRecords records;
             check(SeisWave::readSegy(std::filesystem::path(argv[1]), records, error), error);
@@ -60,6 +73,41 @@ int main(int argc, char **argv) {
                           loaded.traces.size() == 2 && loaded.dt == data.dt,
                       "Rejected import changed the active dataset");
             }
+        auto legacyData = data;
+        legacyData.dt = .0005;
+        for (const auto profile : {SeisWave::SegyExportProfile::LegacyIbm32, SeisWave::SegyExportProfile::CompatibleIeee32})
+            for (double gain : {1., 1e6}) {
+                SeisWave::SegyExportOptions options;
+                options.profile = profile;
+                options.sampleGain = gain;
+                const auto path = folder / ("legacy-" + std::to_string(static_cast<int>(profile)) + "-" + std::to_string(static_cast<int>(gain)) + ".sgy");
+                check(SeisWave::writeSegy(legacyData, 0, path, error, options), error);
+                SeisWave::ImportedRecords loaded;
+                check(SeisWave::readSegy(path, loaded, error), error);
+                check(loaded.dt == .0005 && loaded.component == "Vz" &&
+                          loaded.units == (gain == 1 ? "m/s" : "scaled(m/s)"), "Legacy component/units/dt lost");
+                for (int r = 0; r < 2; ++r)
+                    for (int t = 0; t < 4; ++t)
+                        check(loaded.traces[r].samples[t] == a[t] * gain, "Legacy IBM/IEEE amplitude round trip failed");
+                options.sampleGain = -1;
+                check(!SeisWave::writeSegy(legacyData, 0, path, error, options), "Negative export gain accepted");
+                options.sampleGain = 1;
+                check(!SeisWave::writeSegy(data, 0, path, error, options), "Fractional-microsecond legacy output accepted without resampling");
+                options.sampleIntervalSeconds = .0005;
+                check(SeisWave::writeSegy(data, 0, path, error, options), error);
+                check(SeisWave::readSegy(path, loaded, error) && loaded.dt == .0005 && loaded.traces.front().samples.size() == 3,
+                      "Legacy uniform output resampling failed");
+                for (int t = 0; t < 3; ++t) {
+                    const double u = t * .0005 / data.dt;
+                    const auto i = static_cast<std::size_t>(u);
+                    const double expected = std::lerp(a[i], a[std::min(i+1,a.size()-1)], u-i);
+                    check(std::abs(loaded.traces.front().samples[t] - expected) < 2e-6, "Legacy resampling values differ");
+                }
+                // Preserve the exact known-sample fixtures for independent byte-level validation.
+                options.sampleIntervalSeconds = 0;
+                options.sampleGain = gain;
+                check(SeisWave::writeSegy(legacyData, 0, path, error, options), error);
+            }
         auto invalid = data;
         invalid.dt = 0;
         const auto existing = folder / "ieee32_Vz.sgy";
@@ -68,7 +116,7 @@ int main(int argc, char **argv) {
                   std::filesystem::file_size(existing) == before,
               "Invalid export damaged an existing file");
         std::cout << "PASS SEG-Y: two components, IEEE32/64, exact fractional-us dt, signed mm geometry, "
-                     "trace delays, transactional failure\n";
+                     "trace delays, transactional failure; legacy rev1 IBM/IEEE, EBCDIC/ASCII, gain units, uniform resampling\n";
     } catch (const std::exception &ex) {
         std::cerr << "FAIL: " << ex.what() << '\n';
         return 1;

@@ -42,6 +42,8 @@ int main(int argc, char **argv) {
             std::cout << "Window routing PASS: normal size / position, maximized state and restore rectangle\n";
             return 0;
         }
+        if (mode == "--capture-2d")
+            return Seis2D::Curvilinear::Ui::captureWorkflow2D();
         if (mode == "--smoke-2d")
             return Seis2D::Curvilinear::Ui::runWorkbench2D(true);
         if (mode == "--smoke-2d-model")

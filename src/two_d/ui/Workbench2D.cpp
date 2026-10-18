@@ -24,8 +24,10 @@
 #include <cstdio>
 #include <fstream>
 #include <iostream>
+#include <iomanip>
 #include <numeric>
 #include <string_view>
+#include <unordered_map>
 namespace Seis2D::Curvilinear::Ui {
 using namespace Seis3D::Curvilinear::Ui;
 namespace {
@@ -99,7 +101,9 @@ struct Workbench {
     ImVec2 dialogViewport{};
     SeisWave::Ui::RecordView recordView;
     SeisWave::ImportedRecords imported;
-    bool useImported{}, ieee64{};
+    bool useImported{};
+    int segyProfile{};
+    double segyGain{1}, segyIntervalMs{.5};
     std::array<bool, 3> exportComponents{true, false, false};
     bool snapshotFollowDisplay{true}, snapshotMaterial{};
     std::array<bool, 7> snapshotComponents{false, true, false, false, false, false, false};
@@ -114,6 +118,17 @@ struct Workbench {
     int lastWidth{};
     float recordHeight{};
     bool parameterWindow{true}, waveWindow{true}, recordWindow{true}, summaryWindow{true};
+    int groupEpoch{};
+    bool groupsExpanded{true};
+    std::unordered_map<ImGuiID,int> groupApplied;
+    bool parameterGroup(const char *title, ImGuiTreeNodeFlags flags = 0) {
+        const auto id = ImGui::GetID(title);
+        if (groupEpoch && groupApplied[id] != groupEpoch) {
+            ImGui::SetNextItemOpen(groupsExpanded);
+            groupApplied[id] = groupEpoch;
+        }
+        return ImGui::CollapsingHeader(title, flags);
+    }
     Workbench() {
         inventory = Seis3D::Curvilinear::queryCudaDevices3D();
         selectedBackend = Seis3D::Curvilinear::selectCudaDevice3D(inventory).available ? 1 : 0;
@@ -219,11 +234,15 @@ struct Workbench {
                     target = path.parent_path() / (path.stem().native() +
                                                    std::filesystem::path("_" + data.components[c]).native() +
                                                    path.extension().native());
-                if (!SeisWave::writeSegy(data, static_cast<int>(c), target, error, ieee64))
+                SeisWave::SegyExportOptions options;
+                options.profile = static_cast<SeisWave::SegyExportProfile>(segyProfile);
+                options.sampleGain = segyGain;
+                options.sampleIntervalSeconds = segyProfile >= 2 ? segyIntervalMs * .001 : 0;
+                if (!SeisWave::writeSegy(data, static_cast<int>(c), target, error, options))
                     return;
             }
-        status =
-            l("Raw SEG-Y exported; components use separate files.", "原始 SEG-Y 已导出，多分量分别保存。");
+        status = segyGain == 1 ? l("SEG-Y exported without amplitude scaling; components use separate files.", "SEG-Y 已按原始振幅导出，多分量分别保存。")
+                              : l("SEG-Y exported with the specified constant multiplier, recorded in the textual header.", "SEG-Y 已按指定固定倍率导出，倍率已写入文本头。" );
     }
     SnapshotExportOptions snapshotOptions() const {
         auto options = displayedSnapshotOptions(component);
@@ -312,7 +331,7 @@ struct Workbench {
         return true;
     }
     void modelFiles() {
-        if (!ImGui::CollapsingHeader(l("Model save / restore (.vts)", "模型保存与复现（.vts）"),
+        if (!parameterGroup(l("Model save / restore (.vts)", "模型保存与复现（.vts）"),
                                     ImGuiTreeNodeFlags_DefaultOpen))
             return;
         ImGui::TextWrapped("%s", l("Self-contained geometry, materials and parameters; load starts at t=0.",
@@ -442,12 +461,16 @@ struct Workbench {
         ImGui::SameLine();
         if (button("Fit [R]", "适配 [R]", FunctionRole3D::Display))
             fit = true;
-        if (ImGui::GetContentRegionAvail().x < 350)
+        if (ImGui::GetContentRegionAvail().x < 180)
             ImGui::NewLine();
         else
             ImGui::SameLine();
-        ImGui::Text("t %.4f s | %d / %d | dt %.5f ms", simulation.step() * simulation.dt(), simulation.step(),
-                    simulation.totalSteps(), simulation.dt() * 1000);
+        char progress[160];
+        std::snprintf(progress, sizeof(progress), "%d / %d (%.1f%%) | t %.4f s | dt %.5f ms", simulation.step(),
+                      simulation.totalSteps(), 100.0 * simulation.step() / std::max(1, simulation.totalSteps()),
+                      simulation.step() * simulation.dt(), simulation.dt() * 1000);
+        ImGui::ProgressBar(static_cast<float>(simulation.step()) / std::max(1, simulation.totalSteps()),
+                           {-1, ImGui::GetFrameHeight()}, progress);
         ImGui::End();
         const ImVec2 pos{vp->WorkPos.x, vp->WorkPos.y + height};
         ImGui::SetNextWindowPos(pos);
@@ -463,19 +486,13 @@ struct Workbench {
             ImGui::DockBuilderRemoveNode(id);
             ImGui::DockBuilderAddNode(id, ImGuiDockNodeFlags_DockSpace);
             ImGui::DockBuilderSetNodeSize(id, {vp->WorkSize.x - 24, vp->WorkSize.y - height - 20});
-            ImGuiID main = id, left{}, records{}, summary{};
+            ImGuiID main = id, left{}, records{}, summary{}, parameters{};
             ImGui::DockBuilderSplitNode(main, ImGuiDir_Left,
-                                        std::clamp(ImGui::GetFontSize() * 19.f / vp->Size.x, .24f, .43f),
-                                        &left, &main);
-            // Narrow windows put both parameter panels in adjacent tabs, retaining plot width.
-            compactSidebar = vp->Size.x < std::max(1200.f, ImGui::GetFontSize() * 55.f);
-            if (compactSidebar) {
-                summary = left;
-                focusParameters = true;
-            } else ImGui::DockBuilderSplitNode(main, ImGuiDir_Left,
-                                        std::clamp(ImGui::GetFontSize() * 16.f /
-                                                       std::max(1.f, vp->Size.x - ImGui::GetFontSize() * 19.f),
-                                                   .22f, .38f), &summary, &main);
+                                        std::clamp(ImGui::GetFontSize() * 35.f / vp->Size.x, .36f, .62f),
+                                        &parameters, &main);
+            ImGui::DockBuilderSplitNode(parameters, ImGuiDir_Left, .55f, &left, &summary);
+            compactSidebar = false;
+            focusParameters = true;
             const float recordRatio =
                 std::clamp((ImGui::GetFontSize() * 7 + 110) / vp->WorkSize.y, .31f, .50f);
             ImGui::DockBuilderSplitNode(main, ImGuiDir_Down, recordRatio, &records, &main);
@@ -751,6 +768,9 @@ struct Workbench {
                 category = i;
         }
         ImGui::PopFont();
+        if (button("Expand all", "全部展开", FunctionRole3D::Display)) { ++groupEpoch; groupsExpanded = true; }
+        ImGui::SameLine();
+        if (button("Collapse all", "全部折叠", FunctionRole3D::Display)) { ++groupEpoch; groupsExpanded = false; }
         const float footer = ImGui::GetFontSize() * 8 + 82;
         ImGui::BeginChild("##2DParameterFields", {0, -footer}, ImGuiChildFlags_None,
                           ImGuiWindowFlags_AlwaysVerticalScrollbar);
@@ -769,7 +789,7 @@ struct Workbench {
             ImGui::InputInt(id.c_str(), &value, step, fast);
         };
         if (category == 0) {
-            if (ImGui::CollapsingHeader(l("Curved grid", "曲网格与尺寸"), ImGuiTreeNodeFlags_DefaultOpen)) {
+            if (parameterGroup(l("Curved grid", "曲网格与尺寸"), ImGuiTreeNodeFlags_DefaultOpen)) {
 
                 ImGui::TextUnformatted(l("Geometry presets (X x Z)", "几何预设（X × Z）"));
                 ImGui::SetNextItemWidth(-1);
@@ -834,7 +854,7 @@ struct Workbench {
                     staged.flattenDepth = 0;
                 }
             }
-            if (ImGui::CollapsingHeader(l("Elastic material", "弹性介质"), 0)) {
+            if (parameterGroup(l("Elastic material", "弹性介质"), 0)) {
 
                 ImGui::Checkbox(l("Layered material", "分层介质"), &staged.layered);
                 if (!staged.layered) {
@@ -859,7 +879,7 @@ struct Workbench {
             }
             modelFiles();
         } else if (category == 1) {
-            if (ImGui::CollapsingHeader(l("Source / dominant frequency", "震源与激发主频"),
+            if (parameterGroup(l("Source / dominant frequency", "震源与激发主频"),
                                         ImGuiTreeNodeFlags_DefaultOpen)) {
 
                 ImGui::TextUnformatted(l("Source index X / Z (-1 centers X)", "震源索引 X / Z（X=-1 居中）"));
@@ -874,7 +894,7 @@ struct Workbench {
                                                  true, &sourceKindRect, &sourceMomentRect))
                     fitAcquisition(staged);
             }
-            if (ImGui::CollapsingHeader(l("Receiver line", "接收测线"), 0)) {
+            if (parameterGroup(l("Receiver line", "接收测线"), 0)) {
 
                 integer("Start X", "起点 X", staged.receiverStart);
                 integer("Count (max 1024)", "接收数（最多 1024）", staged.receiverCount);
@@ -887,7 +907,7 @@ struct Workbench {
                                            "Vx、Vz 共用输出时间轴，记录包含零时刻。"));
             }
         } else if (category == 2) {
-            if (ImGui::CollapsingHeader(l("Compute backend", "计算核心"), ImGuiTreeNodeFlags_DefaultOpen)) {
+            if (parameterGroup(l("Compute backend", "计算核心"), ImGuiTreeNodeFlags_DefaultOpen)) {
 
                 ImGui::SetNextItemWidth(-1);
                 const auto availability = Seis3D::Curvilinear::selectCudaDevice3D(inventory);
@@ -922,7 +942,7 @@ struct Workbench {
                 ImGui::TextWrapped("%s", selected.description.c_str());
                 integer("CPU workers (0=auto)", "CPU 线程（0=自动）", settings.cpuThreads);
             }
-            if (ImGui::CollapsingHeader(l("Time / absorption", "时间与吸收层"), 0)) {
+            if (parameterGroup(l("Time / absorption", "时间与吸收层"), 0)) {
                 input("Duration (s)", "模拟时长（s）", staged.duration, .1);
                 integer("Maximum steps (0=duration)", "最大步数（0=按时长）", staged.maxSteps, 100, 1000);
                 input("DRP CFL (0.02..0.8)", "DRP CFL（0.02..0.8）", staged.cfl, .02);
@@ -933,7 +953,7 @@ struct Workbench {
                 samplingControls();
             }
         } else if (category == 3) {
-            if (ImGui::CollapsingHeader(l("Layers / palettes", "图层与独立色标"),
+            if (parameterGroup(l("Layers / palettes", "图层与独立色标"),
                                         ImGuiTreeNodeFlags_DefaultOpen)) {
                 const char *components[]{"Vz", "Vx", "|V|", l("Pressure (Pa)", "压力（Pa）")};
                 ImGui::SetNextItemWidth(-1);
@@ -960,7 +980,7 @@ struct Workbench {
             }
         } else {
             modelFiles();
-            if (ImGui::CollapsingHeader(l("SEG-Y import", "SEG-Y 导入"), ImGuiTreeNodeFlags_DefaultOpen)) {
+            if (parameterGroup(l("SEG-Y import", "SEG-Y 导入"), ImGuiTreeNodeFlags_DefaultOpen)) {
                 ImGui::SetNextItemWidth(-1);
                 ImGui::InputText("##2DimportPath", importPath.data(), importPath.size());
                 if (button("Browse input", "选择文件", FunctionRole3D::Model))
@@ -973,7 +993,7 @@ struct Workbench {
                     ImGui::TextWrapped("%s", imported.description.c_str());
                 }
             }
-            if (ImGui::CollapsingHeader(l("Raw SEG-Y export", "原始 SEG-Y 导出"),
+            if (parameterGroup(l("SEG-Y export", "SEG-Y 导出"),
                                         ImGuiTreeNodeFlags_DefaultOpen)) {
                 ImGui::TextWrapped(
                     "%s", l("Export the selected record source. Multiple components produce separate files.",
@@ -984,8 +1004,28 @@ struct Workbench {
                         ImGui::SameLine();
                     ImGui::Checkbox(data.components[c].c_str(), &exportComponents[c]);
                 }
-                ImGui::Checkbox(l("IEEE Float64 (default: Float32)", "IEEE Float64（默认 Float32）"),
-                                &ieee64);
+                ImGui::TextUnformatted(l("SEG-Y compatibility profile", "SEG-Y 兼容格式"));
+                ImGui::SetNextItemWidth(-1);
+                ImGui::Combo("##2DSegyProfile", &segyProfile,
+                             l("Exact dt / rev2 IEEE32\0Exact dt / rev2 IEEE64\0Legacy / rev1 IBM32 (EBCDIC)\0Compatible / rev1 IEEE32 (ASCII)\0",
+                               "精确时间步 / rev2 IEEE32\0精确时间步 / rev2 IEEE64\0旧软件兼容 / rev1 IBM32（EBCDIC）\0兼容 / rev1 IEEE32（ASCII）\0"));
+                if (segyProfile >= 2) {
+                    ImGui::TextWrapped("%s", l("Big endian, 240-byte headers, live trace ID=1, channel/CDP 1..N. Choose the same data format in the target importer.",
+                                               "大端、240 字节道头、有效道标识 1，通道/CDP 按 1..N 编号；导入时匹配 IBM 或 IEEE 格式。"));
+                    ImGui::TextUnformatted(l("Export sampling interval (ms)", "导出采样间隔（ms）"));
+                    ImGui::SetNextItemWidth(-1);
+                    ImGui::InputDouble("##2DSegyInterval", &segyIntervalMs, .5, 1, "%.4f");
+                    ImGui::TextWrapped("%s", l("0 preserves the source interval (whole microseconds required); otherwise explicitly resamples linearly. 0.5 / 1 ms recommended.",
+                                               "0 保留原间隔（须为整微秒），其他值显式线性重采样；建议 0.5 或 1 ms。"));
+                }
+                ImGui::TextUnformatted(l("Export amplitude multiplier", "导出振幅倍率"));
+                ImGui::SetNextItemWidth(-1);
+                ImGui::InputDouble("##2DSegyGain", &segyGain, 0, 0, "%.8g");
+                if (button("Physical amplitude x1", "原始振幅 ×1", FunctionRole3D::Display)) segyGain = 1;
+                ImGui::SameLine();
+                if (button("Display copy x1e6", "显示副本 ×1e6", FunctionRole3D::Display)) segyGain = 1e6;
+                ImGui::TextWrapped("%s", l("One constant for every trace/component; written to the textual header. Scaling changes exported units, not the simulation. Display AGC is excluded.",
+                                           "所有道和分量共用一个固定倍率，文本头记录倍率。放大只影响导出副本并标记 scaled 单位，不改变模拟；不导出显示 AGC。"));
                 ImGui::SetNextItemWidth(-1);
                 ImGui::InputText("##2Dsegy", segy.data(), segy.size());
                 if (button("Save as", "选择位置", FunctionRole3D::Export))
@@ -994,7 +1034,7 @@ struct Workbench {
                 if (button("Export SEG-Y", "导出 SEG-Y", FunctionRole3D::Export))
                     exportSegy();
             }
-            if (ImGui::CollapsingHeader(l("Wavefield snapshot / CSV", "波场快照与 CSV"))) {
+            if (parameterGroup(l("Wavefield snapshot / CSV", "波场快照与 CSV"))) {
                 ImGui::TextWrapped("%s", l("Wavefield VTS is for analysis, not model restore. Use the model module to reproduce a run.",
                                            "波场快照用于分析；复现模拟请使用上方的模型保存模块。"));
                 snapshotControls();
@@ -1007,7 +1047,7 @@ struct Workbench {
                         error);
             }
         }
-        if (ImGui::CollapsingHeader(l("Diagnostics", "数值诊断"))) {
+        if (parameterGroup(l("Diagnostics", "数值诊断"))) {
             const auto &d = simulation.diagnostics();
             ImGui::TextWrapped("%s", simulation.backend().deviceName.c_str());
             ImGui::Text("PPW %.2f | Energy %.4g J/m", d.ppw, d.energy);
@@ -1463,6 +1503,8 @@ struct Workbench {
     }
 };
 } // namespace
+#include "WorkflowCapture2D.inc"
+
 int validateModelWorkflow2D() {
     std::string error;
     SeisWave::Ui::AppRuntime runtime;
@@ -1560,8 +1602,20 @@ int validateModelWorkflow2D() {
     int captureWidth, captureHeight;
     glfwGetFramebufferSize(runtime.window(), &captureWidth, &captureHeight);
     SeisWave::Ui::capture(out / "snapshot-components.ppm", captureWidth, captureHeight);
+    // UI export routing must pass compatibility, sampling and gain options together.
+    const auto segyFile = out / "legacy-receivers.sgy";
+    const auto segyUtf8 = segyFile.u8string();
+    std::snprintf(app.segy.data(), app.segy.size(), "%s", reinterpret_cast<const char *>(segyUtf8.c_str()));
+    app.useImported = false;
+    app.segyProfile = 2; app.segyGain = 1e6; app.segyIntervalMs = .5;
+    if (!app.simulation.advance(13, error)) throw std::runtime_error(error);
+    app.exportSegy();
+    SeisWave::ImportedRecords compatibleRecords;
+    if (!app.error.empty() || !SeisWave::readSegy(segyFile, compatibleRecords, error) ||
+        compatibleRecords.dt != .0005 || compatibleRecords.component != "Vz" || compatibleRecords.units != "scaled(m/s)")
+        throw std::runtime_error("2D SEG-Y compatibility/gain/sampling controls were not applied: " + app.error + error);
     std::cout << "PASS 2D model UI: UTF-8 VTS restore, staged/active synchronization, recomputed dt, 0.5/1 ms records, "
-                 "responsive summary in 6 bilingual/theme/size/font layouts; actual snapshot controls follow pressure / manual Vz+pressure export\n";
+                 "responsive summary in 6 bilingual/theme/size/font layouts; actual snapshot controls follow pressure / manual Vz+pressure export; legacy SEG-Y gain/sampling\n";
     return 0;
 }
 int runWorkbench2D(bool smoke, bool homeTest) {

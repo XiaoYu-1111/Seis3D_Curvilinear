@@ -2,6 +2,7 @@
 
 | 内容 | 入口 |
 | --- | --- |
+| 二维/三维模型 VTS 复现与所选波场分量、记录导出 | [模型与波场数据交换](MODEL_AND_WAVEFIELD_IO.md) |
 | 实际 DEM 预览、横/纵剖面、范围选择与 CSV 导出 | [DEM 剖面提取 Notebook](../tools/dem_profiles/README.md) |
 | 控制方程、交错/同位网格比较、曲网格映射、DRP/RK 与稳定性 | [曲网格波场理论整理](CURVILINEAR_WAVE_THEORY.md) |
 | 定向体力、各向同性爆炸源、单位与验证 | [震源机制](SOURCE_MECHANISMS.md) |
@@ -29,6 +30,6 @@ python -B tools/package_documentation.py
 
 工具直接读取仓库内正文、发表 PNG 和截图元数据，无需重新模拟。离线图文包生成到 `../out/documentation`，GitHub Pages / Hexo 两套资源生成到 `../out/blog`，ZIP 也在对应外层目录。
 
-两版博客同源，只适配 front matter 和资源路径。Hexo 保持 `![说明](01-model.png)`，PNG 放在文章同名资源目录。站点需自行配置数学公式支持；工具不修改网站或推送。
+两版博客同源，只适配 front matter 和资源路径。Hexo 保持 `![说明](01-model.png)`，PNG 放在文章同名资源目录。已验证的 NexT / kramed 兼容修复见[Hexo 数学公式设置](HEXO_MATH.md)。打包工具不修改网站或推送。
 
-重新采集界面可用 `--capture-workflow`，输出位于 `../out/screenshots/curvilinear-workflow`；`python -B tools/analyze_dispersion.py` 输出位于 `../out/validation/dispersion`。更新发表图片时先复核图像、参数及解释，再将选定 PNG 和对应 capture.tsv 更新到 `docs/images` 并重新打包。不要复制原始帧、构建日志或模拟中间文件进入 docs。
+当前截图全部保留原生 2560×1494 完整客户区。三维重新采集用 `--capture-workflow`，二维用 `--capture-2d`，主页用 `--smoke-home`；二维完整流程位于 `../out/screenshots/two-d-workflow`。三维输出位于 `../out/screenshots/curvilinear-workflow`；`python -B tools/analyze_dispersion.py` 输出位于 `../out/validation/dispersion`。采集后先复核图像、参数及解释，再运行 `python -B tools/publish_screenshots.py` 无损转换到 `docs/images`，最后重新打包。不要复制原始帧、构建日志或模拟中间文件进入 docs。

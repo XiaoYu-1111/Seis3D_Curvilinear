@@ -464,3 +464,9 @@
 {"Edited f0 %.1f Hz: target largest physical cell <= %.3f m for 8 PPW at 2.5 f0.","待应用主频 %.1f Hz：按 2.5f0、8 点/波长，最大物理单元边长应 ≤ %.3f m。"},
 {"Nominal PPW at f0 / 2.5 f0: %.2f / %.2f (before terrain stretching).","主频 / 2.5 倍主频的名义波长采样：%.2f / %.2f 点（尚未计入地形拉伸）。"},
 {"Refining spacing also shrinks physical size and changes terrain compression. Review source depth, flatten depth, duration and boundaries together.","减小间距也会缩小物理尺寸、改变地形压缩；请同时检查震源深度、展平深度、时长和边界距离。"},
+
+{"Reproducible model VTS", "可复现模型 VTS"},
+{"Wavefield snapshot VTS", "波场快照 VTS"},
+{"Reproducible 3D model saved. Import starts a new simulation at t=0.", "已保存可复现三维模型，导入后从零时刻开始。"},
+{"3D model restored at t=0; dt and receiver layout recalculated.", "三维模型已从零时刻重建，时间步与接收排列已重新计算。"},
+{"Model restored at t=0 using CPU; CUDA unavailable.", "模型已从零时刻重建；CUDA 不可用，已使用 CPU。"},

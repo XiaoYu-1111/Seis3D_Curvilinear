@@ -24,7 +24,7 @@
 
 博客发表内容由仓库内 `docs/PROJECT_MANUAL.md` 及图片生成，发布包无需重复提交到源码仓库。完整图文在 GitHub 上可通过 README 和文档导航阅读。
 
-外层输出按用途整理：当前缓存保留在 `build/x64-Release`、`build/x64-Debug`，界面检查位于 `validation/ui`，二维截图位于 `screenshots/two-d`，数值数据位于 `validation`，用户二维导出位于 `2d`。旧独立构建副本和未压缩截图可清理；不要将其回填到源码目录。说明和博客只使用已复核的仓库内 PNG。
+外层输出按用途整理：当前缓存保留在 `build/x64-Release`、`build/x64-Debug`，界面检查位于 `validation/ui`，二维完整截图位于 `screenshots/two-d-workflow`，三维完整截图位于 `screenshots/curvilinear-workflow`，数值数据位于 `validation`，用户二维导出位于 `2d`。旧独立构建副本和未压缩截图可清理；不要将其回填到源码目录。说明和博客只使用已复核的仓库内 PNG。
 
 `.gitignore` 提供误操作保护，不能取消已经跟踪的文件。提交前可用 `git status --short`、`git diff --stat` 和 `git ls-files` 检查清单，确认没有新加入的二进制、缓存、个人路径或 Git 凭据。本次整理不自动提交或推送。
 

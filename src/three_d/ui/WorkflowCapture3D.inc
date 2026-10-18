@@ -5,7 +5,7 @@ bool captureWorkflow3D(Workbench3D& app,GLFWwindow* window) {
     std::ofstream manifest(output/"capture.tsv");
     manifest<<"image\tdescription\twidth\theight\tbackend\tstep\ttime_s\tdt_s\tnx\tny\tnz\tspacing_m\tf0_hz\tppw\treceivers\tsamples\tconfiguration_id\tconfiguration\n"<<std::setprecision(17);
     const auto rawHash=[&]{std::uint64_t hash=1469598103934665603ULL;for(const auto& r:app.simulation->receivers())for(const auto* samples:{&r.samples,&r.samplesVx,&r.samplesVy})for(double v:*samples){hash^=std::bit_cast<std::uint64_t>(v);hash*=1099511628211ULL;}return hash;};
-    const auto stage=[&](const SimulationParameters& p){app.edited=p;app.shortcutHelp=false;app.error.clear();if(!app.rebuild(true))return false;const auto s=sourceIndices3D(p);app.slices={s[0],s[1],s[2]};app.resetViews();app.recordView.settings={};app.visuals={};app.visuals.autoRange=true;app.visuals.showGrid=false;app.visuals.palette=1;app.visuals.displayMode=0;return true;};
+    const auto stage=[&](const SimulationParameters& p){app.edited=p;app.shortcutHelp=false;app.error.clear();if(!app.rebuild(true))return false;const auto s=sourceIndices3D(p);app.slices={s[0],s[1],s[2]};app.resetViews();app.recordView.settings={};app.visuals={};app.visuals.autoRange=true;app.visuals.showGrid=true;app.visuals.modelPalette=1;app.visuals.palette=1;app.visuals.displayMode=0;return true;};
     const auto advanceTo=[&](double time){const int goal=std::min(app.simulation->totalSteps(),static_cast<int>(std::lround(time/app.simulation->dt())));return app.simulation->advance(std::max(0,goal-app.simulation->currentStep()),app.error);};
     const auto shot=[&](const char* name,const char* description,int tab,int layout=1){
         app.running=false;app.requestedTab=tab;app.layoutPreset=layout;app.resetLayout=true;++app.groupEpoch;app.groupsExpanded=true;
@@ -30,7 +30,16 @@ bool captureWorkflow3D(Workbench3D& app,GLFWwindow* window) {
     app.recordView.settings.agc.enabled=false;app.recordView.settings.view=1;app.selectedReceiver=98;app.recordView.invalidate();if(!shot("10-single-3c","Same receiver: Vz Vx Vy raw single-channel records",6,3))return false;
     app.recordView.settings={};app.visuals.showGrid=true;app.visuals.showAbsorbingLayer=true;if(!shot("11-grid-absorber","Actual cell grid and numerical sponge overlay",8))return false;
     app.visuals.showGrid=app.visuals.showAbsorbingLayer=false;app.shortcutHelp=true;if(!shot("12-shortcuts","Regular-grid-compatible shortcut help",2))return false;app.shortcutHelp=false;
-    std::snprintf(app.csvPath.data(),app.csvPath.size(),"%s",utf8Path3D(output/"benchmark_3c.csv").c_str());app.exportThreeComponents=true;app.exportTraces();if(!app.error.empty()||!shot("13-export","Raw three-component CSV export settings",3))return false;
+    const auto modelPath=output/"workflow_model.vts";
+    std::snprintf(app.modelPath.data(),app.modelPath.size(),"%s",utf8Path3D(modelPath).c_str());
+    app.saveModel();if(!app.error.empty())return false;
+    const auto saved=app.simulation->parameters();const double savedDt=app.simulation->dt();
+    app.edited.spacing=7;app.dirty=true;
+    if(!app.loadModel()||app.simulation->parameters()!=saved||app.simulation->currentStep()!=0||app.simulation->dt()!=savedDt||!advanceTo(.5))return false;
+    std::snprintf(app.vtsPath.data(),app.vtsPath.size(),"%s",utf8Path3D(output/"workflow_vz.vts").c_str());
+    app.visuals.component=0;app.snapshotFollowDisplay=true;app.exportSnapshot();if(!app.error.empty())return false;
+    std::cout<<"3D UI model restore / pending synchronization / selected Vz export PASS\n"<<std::flush;
+    std::snprintf(app.csvPath.data(),app.csvPath.size(),"%s",utf8Path3D(output/"benchmark_3c.csv").c_str());app.receiverExportComponents={true,true,true};app.exportTraces();if(!app.error.empty()||!shot("13-export","Reproducible model save/import and selected wavefield export",3))return false;
     auto layers=applyMaterialPreset3D(1,base);layers.nx=100;layers.ny=20;layers.nz=100;layers.spacing=1;layers.topographyAmplitude=2;layers.topographyWavelength=60;layers.sourceX=50;layers.sourceY=10;layers.sourceZ=20;layers.receiverArray={};layers.duration=.12;
     if(!stage(layers))return false;app.materialPreset=1;app.visuals.displayMode=1;app.visuals.showGrid=true;if(!shot("14-layered-model","Provided five-layer loess table aligned by k",5))return false;
     for(int frequency:{30,50,60}) {
