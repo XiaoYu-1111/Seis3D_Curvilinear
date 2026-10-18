@@ -44,6 +44,8 @@ int main(int argc, char **argv) {
         }
         if (mode == "--smoke-2d")
             return Seis2D::Curvilinear::Ui::runWorkbench2D(true);
+        if (mode == "--smoke-2d-model")
+            return Seis2D::Curvilinear::Ui::validateModelWorkflow2D();
         if (mode == "--smoke-router") {
             if (runHomeScreen(true, 1) != Route::TwoD ||
                 Seis2D::Curvilinear::Ui::runWorkbench2D(true, true) != returnHome)

@@ -13,6 +13,7 @@
 #endif
 #include "Seis2D/CurvilinearSolver2D.hpp"
 #include "Seis2D/ModelPresets2D.hpp"
+#include "Seis2D/ModelIo2D.hpp"
 #include "imgui.h"
 #include "imgui_internal.h"
 #include "implot.h"
@@ -80,15 +81,15 @@ struct Workbench {
     Simulation simulation;
     Parameters staged;
     ComputeSettings3D settings, activeSettings;
-    int selectedBackend{}, category{}, component{}, wavePalette{1}, modelPalette{12}, modelComponent{},
+    int selectedBackend{}, category{}, component{}, wavePalette{1}, modelPalette{1}, modelComponent{},
         selectedReceiver{};
-    bool running{}, home{}, help{}, fit{true}, grid{}, sponge{}, normalized{true}, showWave{true},
+    bool running{}, home{}, help{}, fit{true}, grid{true}, sponge{}, normalized{true}, showWave{true},
         showModel{true};
     float gain{1};
     std::string error, status;
     std::vector<float> frame;
     std::vector<double> terrainPreviewX, terrainPreviewZ;
-    std::array<char, 2048> vts{}, csv{}, segy{}, importPath{}, surfacePath{};
+    std::array<char, 2048> vts{}, csv{}, segy{}, importPath{}, surfacePath{}, modelPath{};
     std::vector<Layer> layerDraft;
     bool openLayers{}, openTerrain{}, zeroSurfaceX{true};
     int layerPreset{-1};
@@ -100,23 +101,30 @@ struct Workbench {
     SeisWave::ImportedRecords imported;
     bool useImported{}, ieee64{};
     std::array<bool, 3> exportComponents{true, false, false};
+    bool snapshotFollowDisplay{true}, snapshotMaterial{};
+    std::array<bool, 7> snapshotComponents{false, true, false, false, false, false, false};
     std::uint64_t recordGeneration{1}, importedRevision{1};
     ImRect rebuildRect, frequencyRect, sourceKindRect, sourceMomentRect;
+    ImRect snapshotToggleRect, snapshotSaveRect;
+    std::array<ImRect, 7> snapshotComponentRects;
     int lastHeight{};
     Seis3D::Curvilinear::CudaDeviceInventory3D inventory;
     ImRect homeRect;
-    bool layout{true}, domainVisible{};
+    bool layout{true}, domainVisible{}, compactSidebar{}, focusParameters{};
     int lastWidth{};
     float recordHeight{};
-    bool parameterWindow{true}, waveWindow{true}, recordWindow{true};
+    bool parameterWindow{true}, waveWindow{true}, recordWindow{true}, summaryWindow{true};
     Workbench() {
         inventory = Seis3D::Curvilinear::queryCudaDevices3D();
         selectedBackend = Seis3D::Curvilinear::selectCudaDevice3D(inventory).available ? 1 : 0;
         const auto output = SeisWave::Ui::outputRoot() / "2d";
         std::filesystem::create_directories(output);
-        std::snprintf(vts.data(), vts.size(), "%s", (output / "wavefield.vts").string().c_str());
-        std::snprintf(csv.data(), csv.size(), "%s", (output / "receivers.csv").string().c_str());
-        std::snprintf(segy.data(), segy.size(), "%s", (output / "receivers.sgy").string().c_str());
+        const auto setPath = [&](auto &field, const char *file) {
+            const auto name = (output / file).u8string();
+            std::snprintf(field.data(), field.size(), "%s", reinterpret_cast<const char *>(name.c_str()));
+        };
+        setPath(vts, "wavefield.vts"); setPath(modelPath, "model.vts");
+        setPath(csv, "receivers.csv"); setPath(segy, "receivers.sgy");
     }
     bool apply() {
         if (!simulation.initialize(staged, error, static_cast<BackendKind3D>(selectedBackend), settings))
@@ -138,7 +146,7 @@ struct Workbench {
     }
     SeisWave::RecordDataView liveRecords() const {
         SeisWave::RecordDataView data;
-        data.dt = simulation.dt();
+        data.dt = simulation.recordDt();
         data.revision = (recordGeneration << 32) + simulation.step() + 1;
         data.components = {"Vz", "Vx"};
         const auto &p = simulation.parameters();
@@ -217,16 +225,147 @@ struct Workbench {
         status =
             l("Raw SEG-Y exported; components use separate files.", "原始 SEG-Y 已导出，多分量分别保存。");
     }
-    void browse(std::array<char, 2048> &path, bool save, bool terrain = false) {
+    SnapshotExportOptions snapshotOptions() const {
+        auto options = displayedSnapshotOptions(component);
+        if (!snapshotFollowDisplay)
+            options.components = snapshotComponents;
+        options.includeMaterial = snapshotMaterial;
+        return options;
+    }
+    bool exportWavefield() {
+        auto path = std::filesystem::path(std::u8string(reinterpret_cast<const char8_t *>(vts.data())));
+        if (path.extension().empty()) path += ".vts";
+        if (!writeSnapshot(simulation, path, error, snapshotOptions()))
+            return false;
+        status = l("Selected raw Float64 wavefield components exported.", "所选波场分量已按原始 Float64 物理量导出。");
+        return true;
+    }
+    void snapshotControls() {
+        const bool changed = ImGui::Checkbox(l("Follow displayed component", "跟随当前显示分量"), &snapshotFollowDisplay);
+        snapshotToggleRect = {ImGui::GetItemRectMin(), ImGui::GetItemRectMax()};
+        if (changed && !snapshotFollowDisplay)
+            snapshotComponents = displayedSnapshotOptions(component).components;
+        if (!snapshotFollowDisplay) {
+            const char *names[]{"Vx (m/s)", "Vz (m/s)", "|V| (m/s)", l("Pressure (Pa)", "压力（Pa）"),
+                                "Sxx (Pa)", "Szz (Pa)", "Sxz (Pa)"};
+            if (ImGui::BeginTable("##snapshotComponents", 2, ImGuiTableFlags_SizingStretchSame)) {
+                for (int i = 0; i < 7; ++i) {
+                    ImGui::TableNextColumn();
+                    ImGui::Checkbox(names[i], &snapshotComponents[i]);
+                    snapshotComponentRects[i] = {ImGui::GetItemRectMin(), ImGui::GetItemRectMax()};
+                }
+                ImGui::EndTable();
+            }
+            if (button("All wavefield components", "全选波场分量", FunctionRole3D::Display, {-1, 0}))
+                snapshotComponents.fill(true);
+        }
+        ImGui::Checkbox(l("Include Vp / Vs / density", "附带 Vp / Vs / 密度"), &snapshotMaterial);
+        const auto options = snapshotOptions();
+        const char *names[]{"Vx", "Vz", "|V|", l("Pressure", "压力"), "Sxx", "Szz", "Sxz"};
+        std::string selected;
+        for (int i = 0; i < 7; ++i)
+            if (options.components[i]) {
+                if (!selected.empty()) selected += ", ";
+                selected += names[i];
+            }
+        ImGui::TextWrapped("%s: %s", l("Export components", "将导出分量"),
+                           selected.empty() ? l("None selected", "尚未选择") : selected.c_str());
+        ImGui::TextWrapped("%s", l("Physical Float64 values; display gain, palette and normalization are excluded.",
+                                   "保存原始 Float64 物理值，不应用显示增益、色带或归一化。"));
+        ImGui::SetNextItemWidth(-1);
+        ImGui::InputText("##2Dvts", vts.data(), vts.size());
+        if (button("Snapshot save location", "选择快照保存位置", FunctionRole3D::Export, {-1, 0}))
+            browse(vts, true, 2);
+        ImGui::BeginDisabled(selected.empty());
+        if (button("Export VTS snapshot", "导出 VTS 快照", FunctionRole3D::Export, {-1, 0}))
+            exportWavefield();
+        snapshotSaveRect = {ImGui::GetItemRectMin(), ImGui::GetItemRectMax()};
+        ImGui::EndDisabled();
+    }
+    bool loadModel() {
+        ModelDocument document;
+        const auto path = std::filesystem::path(std::u8string(reinterpret_cast<const char8_t *>(modelPath.data())));
+        if (!readModelVts(path, document, error))
+            return false;
+        const auto oldParameters = staged;
+        const auto oldSettings = settings;
+        const int oldBackend = selectedBackend;
+        staged = document.parameters;
+        settings = document.compute;
+        // GPU ordinal is machine-local. Resolve an available device on this machine again.
+        settings.cudaDevice = -1;
+        const bool fallback = document.backend == BackendKind3D::Cuda &&
+                              !Seis3D::Curvilinear::queryBackend3D(BackendKind3D::Cuda).available;
+        selectedBackend = fallback ? 0 : static_cast<int>(document.backend);
+        if (!apply()) {
+            staged = oldParameters;
+            settings = oldSettings;
+            selectedBackend = oldBackend;
+            return false;
+        }
+        updateTerrainPreview();
+        status = fallback ? l("Model rebuilt at t=0 on CPU (CUDA unavailable here).", "模型已从 t=0 重建；本机 CUDA 不可用，采用 CPU。")
+                          : l("Model and all simulation parameters restored at t=0.", "模型及全部模拟参数已恢复，从 t=0 开始。" );
+        if (std::abs(simulation.dt() - document.referenceDt) > 1e-10 * document.referenceDt)
+            status += l(" Recomputed dt differs from the saved reference; check the active panel.",
+                        " 重新计算的 dt 与保存参考值不同，请核对生效参数面板。" );
+        return true;
+    }
+    void modelFiles() {
+        if (!ImGui::CollapsingHeader(l("Model save / restore (.vts)", "模型保存与复现（.vts）"),
+                                    ImGuiTreeNodeFlags_DefaultOpen))
+            return;
+        ImGui::TextWrapped("%s", l("Self-contained geometry, materials and parameters; load starts at t=0.",
+                                   "保存曲网格、物性及全部参数；载入后从零时刻重建。"));
+        ImGui::SetNextItemWidth(-1);
+        ImGui::InputText("##2DmodelPath", modelPath.data(), modelPath.size());
+        if (button("Browse model", "选择模型文件", FunctionRole3D::Model))
+            browse(modelPath, false, 2);
+        ImGui::SameLine();
+        if (button("Load model", "载入模型", FunctionRole3D::Model))
+            loadModel();
+        if (button("Model save location", "选择保存位置", FunctionRole3D::Export, {-1, 0}))
+            browse(modelPath, true, 2);
+        ImGui::BeginDisabled(dirty());
+        if (button("Save active model VTS", "保存当前生效模型 VTS", FunctionRole3D::Export, {-1, 0})) {
+            auto path = std::filesystem::path(std::u8string(reinterpret_cast<const char8_t *>(modelPath.data())));
+            if (path.extension().empty()) path += ".vts";
+            if (writeModelVts(simulation, path, activeSettings, error))
+                status = l("Reproducible model VTS saved.", "可复现模型 VTS 已保存。" );
+        }
+        ImGui::EndDisabled();
+        if (dirty())
+            ImGui::TextWrapped("%s", l("Apply pending edits before saving a model.", "存在待应用修改，请先重置并应用后保存模型。"));
+    }
+    void samplingControls() {
+        ImGui::TextUnformatted(l("Record sampling interval", "记录采样间隔"));
+        const double intervals[]{0, .5, 1, 2};
+        int selected = 4;
+        for (int i = 0; i < 4; ++i)
+            if (staged.sampleIntervalMs == intervals[i]) selected = i;
+        ImGui::SetNextItemWidth(-1);
+        if (ImGui::Combo("##2DSamplePreset", &selected,
+                         l("Each solver step\0" "0.5 ms\0" "1 ms\0" "2 ms\0Custom\0",
+                           "每个计算步\0" "0.5 ms\0" "1 ms\0" "2 ms\0自定义\0")))
+            staged.sampleIntervalMs = selected < 4 ? intervals[selected] : 1.5;
+        if (selected == 4) {
+            ImGui::SetNextItemWidth(-1);
+            ImGui::InputDouble(l("ms###2DSampleMs", "毫秒###2DSampleMs"), &staged.sampleIntervalMs, .1, 1, "%.5f");
+        }
+        ImGui::TextWrapped("%s", l("Uniform output times; linear interpolation between accepted steps. The solver dt is unchanged.",
+                                   "按均匀时刻记录，步间线性插值；不改变求解 dt。"));
+    }
+    void browse(std::array<char, 2048> &path, bool save, int format = 0) {
 #ifdef _WIN32
         std::array<wchar_t, 32768> name{};
         OPENFILENAMEW dialog{};
         dialog.lStructSize = sizeof(dialog);
         dialog.lpstrFile = name.data();
         dialog.nMaxFile = static_cast<DWORD>(name.size());
-        dialog.lpstrFilter = terrain ? L"Surface profile (*.csv;*.txt)\0*.csv;*.txt\0All files\0*.*\0"
-                                     : L"SEG-Y (*.sgy;*.segy)\0*.sgy;*.segy\0All files\0*.*\0";
-        dialog.lpstrDefExt = terrain ? L"csv" : L"sgy";
+        dialog.lpstrFilter = format == 2 ? L"SeisWave model (*.vts)\0*.vts\0All files\0*.*\0"
+                            : format == 1 ? L"Surface profile (*.csv;*.txt)\0*.csv;*.txt\0All files\0*.*\0"
+                                          : L"SEG-Y (*.sgy;*.segy)\0*.sgy;*.segy\0All files\0*.*\0";
+        dialog.lpstrDefExt = format == 2 ? L"vts" : format == 1 ? L"csv" : L"sgy";
         dialog.Flags = OFN_EXPLORER | OFN_PATHMUSTEXIST | (save ? OFN_OVERWRITEPROMPT : OFN_FILEMUSTEXIST);
         if (save ? GetSaveFileNameW(&dialog) : GetOpenFileNameW(&dialog)) {
             const auto utf8 = std::filesystem::path(name.data()).u8string();
@@ -239,7 +378,7 @@ struct Workbench {
 #else
         (void)path;
         (void)save;
-        (void)terrain;
+        (void)format;
 #endif
     }
     void toolbar() {
@@ -249,10 +388,11 @@ struct Workbench {
             homeRect = {ImGui::GetItemRectMin(), ImGui::GetItemRectMax()};
             if (ImGui::BeginMenu(l("Workspace", "工作区"))) {
                 ImGui::MenuItem(l("Parameters", "参数面板"), nullptr, &parameterWindow);
+                ImGui::MenuItem(l("Active parameters", "当前生效参数"), nullptr, &summaryWindow);
                 ImGui::MenuItem(l("Wavefield", "波场窗口"), nullptr, &waveWindow);
                 ImGui::MenuItem(l("Receivers", "接收记录"), nullptr, &recordWindow);
                 if (ImGui::MenuItem(l("Restore layout [F]", "恢复布局 [F]")))
-                    parameterWindow = waveWindow = recordWindow = layout = true;
+                    parameterWindow = summaryWindow = waveWindow = recordWindow = layout = true;
                 ImGui::EndMenu();
             }
             if (ImGui::BeginMenu(l("Appearance", "界面外观"))) {
@@ -323,14 +463,24 @@ struct Workbench {
             ImGui::DockBuilderRemoveNode(id);
             ImGui::DockBuilderAddNode(id, ImGuiDockNodeFlags_DockSpace);
             ImGui::DockBuilderSetNodeSize(id, {vp->WorkSize.x - 24, vp->WorkSize.y - height - 20});
-            ImGuiID main = id, left{}, records{};
+            ImGuiID main = id, left{}, records{}, summary{};
             ImGui::DockBuilderSplitNode(main, ImGuiDir_Left,
                                         std::clamp(ImGui::GetFontSize() * 19.f / vp->Size.x, .24f, .43f),
                                         &left, &main);
+            // Narrow windows put both parameter panels in adjacent tabs, retaining plot width.
+            compactSidebar = vp->Size.x < std::max(1200.f, ImGui::GetFontSize() * 55.f);
+            if (compactSidebar) {
+                summary = left;
+                focusParameters = true;
+            } else ImGui::DockBuilderSplitNode(main, ImGuiDir_Left,
+                                        std::clamp(ImGui::GetFontSize() * 16.f /
+                                                       std::max(1.f, vp->Size.x - ImGui::GetFontSize() * 19.f),
+                                                   .22f, .38f), &summary, &main);
             const float recordRatio =
                 std::clamp((ImGui::GetFontSize() * 7 + 110) / vp->WorkSize.y, .31f, .50f);
             ImGui::DockBuilderSplitNode(main, ImGuiDir_Down, recordRatio, &records, &main);
             ImGui::DockBuilderDockWindow(label("Parameters and run", "参数与运行").c_str(), left);
+            ImGui::DockBuilderDockWindow(label("Active simulation parameters", "当前模拟参数").c_str(), summary);
             ImGui::DockBuilderDockWindow(label("Curved X-Z wavefield", "曲面 X–Z 波场").c_str(), main);
             ImGui::DockBuilderDockWindow(label("Receiver records", "接收记录").c_str(), records);
             ImGui::DockBuilderFinish(id);
@@ -572,6 +722,10 @@ struct Workbench {
     void controls() {
         if (!parameterWindow)
             return;
+        if (focusParameters) {
+            ImGui::SetNextWindowFocus();
+            focusParameters = false;
+        }
         if (!ImGui::Begin(label("Parameters and run", "参数与运行").c_str(), &parameterWindow)) {
             ImGui::End();
             return;
@@ -703,6 +857,7 @@ struct Workbench {
                     layerEditRect = {ImGui::GetItemRectMin(), ImGui::GetItemRectMax()};
                 }
             }
+            modelFiles();
         } else if (category == 1) {
             if (ImGui::CollapsingHeader(l("Source / dominant frequency", "震源与激发主频"),
                                         ImGuiTreeNodeFlags_DefaultOpen)) {
@@ -727,8 +882,9 @@ struct Workbench {
                 integer("Depth index", "深度索引", staged.receiverDepth);
                 if (button("Fit source / receivers", "适配震源/接收位置", FunctionRole3D::Model, {-1, 0}))
                     fitAcquisition(staged);
-                ImGui::TextWrapped("%s", l("Each accepted step samples Vx and Vz; time zero is included.",
-                                           "每个有效步采样 Vx、Vz，记录包含零时刻。"));
+                samplingControls();
+                ImGui::TextWrapped("%s", l("Vx and Vz share the same output axis; time zero is included.",
+                                           "Vx、Vz 共用输出时间轴，记录包含零时刻。"));
             }
         } else if (category == 2) {
             if (ImGui::CollapsingHeader(l("Compute backend", "计算核心"), ImGuiTreeNodeFlags_DefaultOpen)) {
@@ -774,6 +930,7 @@ struct Workbench {
                 integer("X sponge cells", "X 方向吸收格数", staged.spongeX);
                 integer("Bottom sponge cells", "底部吸收格数", staged.spongeZ);
                 input("Sponge strength", "吸收强度", staged.spongeStrength, .1);
+                samplingControls();
             }
         } else if (category == 3) {
             if (ImGui::CollapsingHeader(l("Layers / palettes", "图层与独立色标"),
@@ -802,6 +959,7 @@ struct Workbench {
                 ImGui::Combo("##2DModelProperty", &modelComponent, "Vp\0Vs\0Density\0");
             }
         } else {
+            modelFiles();
             if (ImGui::CollapsingHeader(l("SEG-Y import", "SEG-Y 导入"), ImGuiTreeNodeFlags_DefaultOpen)) {
                 ImGui::SetNextItemWidth(-1);
                 ImGui::InputText("##2DimportPath", importPath.data(), importPath.size());
@@ -836,14 +994,10 @@ struct Workbench {
                 if (button("Export SEG-Y", "导出 SEG-Y", FunctionRole3D::Export))
                     exportSegy();
             }
-            if (ImGui::CollapsingHeader(l("Model snapshot / legacy CSV", "模型快照与 CSV"))) {
-                ImGui::SetNextItemWidth(-1);
-                ImGui::InputText("##2Dvts", vts.data(), vts.size());
-                if (button("Export VTS snapshot", "导出 VTS 快照", FunctionRole3D::Export, {-1, 0}))
-                    writeSnapshot(
-                        simulation,
-                        std::filesystem::path(std::u8string(reinterpret_cast<const char8_t *>(vts.data()))),
-                        error);
+            if (ImGui::CollapsingHeader(l("Wavefield snapshot / CSV", "波场快照与 CSV"))) {
+                ImGui::TextWrapped("%s", l("Wavefield VTS is for analysis, not model restore. Use the model module to reproduce a run.",
+                                           "波场快照用于分析；复现模拟请使用上方的模型保存模块。"));
+                snapshotControls();
                 ImGui::SetNextItemWidth(-1);
                 ImGui::InputText("##2Dcsv", csv.data(), csv.size());
                 if (button("Export Vx / Vz CSV", "导出 Vx/Vz 记录 CSV", FunctionRole3D::Export, {-1, 0}))
@@ -899,6 +1053,122 @@ struct Workbench {
             if (ImGui::IsItemHovered())
                 ImGui::SetTooltip("%s", error.c_str());
         }
+        ImGui::End();
+    }
+    void activeParameters() {
+        if (!summaryWindow)
+            return;
+        if (!ImGui::Begin(label("Active simulation parameters", "当前模拟参数").c_str(), &summaryWindow)) {
+            ImGui::End();
+            return;
+        }
+        const auto &p = simulation.parameters();
+        const auto &g = simulation.grid();
+        const auto &d = simulation.diagnostics();
+        const bool pending = dirty();
+        ImGui::PushTextWrapPos(0);
+        ImGui::TextColored(functionColor3D(pending ? FunctionRole3D::Warning : FunctionRole3D::Run), "%s",
+                           pending ? l("Edits pending / active values below", "存在待应用修改 / 下列为生效值")
+                                   : l("All parameters applied", "参数已全部生效"));
+        if (pending)
+            ImGui::TextWrapped("%s", l("Arrows show staged values. dt is recalculated only after a successful rebuild.",
+                                       "箭头后为待应用值；仅在重建成功后更新 dt。"));
+        ImGui::TextWrapped("%s", simulation.backend().deviceName.c_str());
+        ImGui::TextUnformatted("MacCormack DRP + RK4 / Float64 / P-SV");
+        ImGui::SeparatorText(l("Effective time / geometry", "生效时间与几何"));
+        ImGui::Text("dt = %.8f ms", simulation.dt() * 1000);
+        ImGui::Text("%s %.5f ms", l("Record dt", "记录间隔"), simulation.recordDt() * 1000);
+        ImGui::Text("f0 %.3f Hz | CFL %.3f", p.frequency, p.cfl);
+        ImGui::Text("%d x %d | h %.4f m", p.nx, p.nz, p.spacing);
+        ImGui::TextUnformatted(p.source.kind == SeisWave::SourceKind::IsotropicMoment
+                                   ? l("Isotropic moment source", "各向同性爆炸矩源")
+                                   : l("Directional body force", "定向体力源"));
+        ImGui::Text("t = %.5f s | %d / %d", simulation.step() * simulation.dt(), simulation.step(), simulation.totalSteps());
+        ImGui::Text("%s %.5f s", l("Effective stop", "实际停止时刻"), simulation.totalSteps() * simulation.dt());
+        ImGui::Text("X / Z = %.2f x %.2f m", (p.nx - 1) * p.spacing, (p.nz - 1) * p.spacing);
+        ImGui::Text("%s %.3f m", l("Flatten", "展平深度"), g.flattenDepth);
+        const auto src = g.coordinates[g.index((p.sourceX < 0 ? p.nx / 2 : p.sourceX) + ghost, p.sourceZ + ghost)];
+        ImGui::Text("%s (%.2f, %.2f) m", l("Source", "震源"), src[0], src[1]);
+        const auto &traces = simulation.receivers();
+        ImGui::Text("%zu %s | %zu %s", traces.size(), l("traces", "道"), traces.front().vx.size(), l("samples", "样点"));
+        ImGui::Text("%s %.5f s", l("Last record", "记录末时刻"), (traces.front().vx.size() - 1) * simulation.recordDt());
+        if (p.sampleIntervalMs > 0 && simulation.recordDt() < simulation.dt())
+            ImGui::TextWrapped("%s", l("Output is denser than solver steps: interpolated samples add no temporal resolution.",
+                                       "输出比计算步更密：插值不会提高原计算时间分辨率。"));
+        if (simulation.recordDt() * 2 * 2.5 * p.frequency >= 1)
+            ImGui::TextWrapped("%s", l("Record Nyquist is below the 2.5 f0 reference bandwidth; choose a shorter interval.",
+                                       "记录奈奎斯特频率低于 2.5f0 参考频带，请缩短采样间隔。"));
+        ImGui::SeparatorText(l("Parameter audit", "参数核对"));
+        const auto number = [](double v) {
+            char text[64];
+            std::snprintf(text, sizeof(text), "%.8g", v);
+            return std::string(text);
+        };
+        if (ImGui::BeginTable("##2DActiveTable", 2, ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerH |
+                                                       ImGuiTableFlags_SizingStretchProp)) {
+            ImGui::TableSetupColumn(l("Parameter", "参数"), ImGuiTableColumnFlags_WidthStretch, .48f);
+            ImGui::TableSetupColumn(l("Active / pending", "生效 / 待应用"), ImGuiTableColumnFlags_WidthStretch, .52f);
+            ImGui::TableHeadersRow();
+            const auto row = [&](const char *en, const char *zh, const std::string &value,
+                                 const std::string &edit, bool changed) {
+                ImGui::TableNextRow(); ImGui::TableNextColumn();
+                ImGui::TextWrapped("%s", l(en, zh)); ImGui::TableNextColumn();
+                ImGui::TextWrapped("%s", value.c_str());
+                if (changed) {
+                    ImGui::PushStyleColor(ImGuiCol_Text, functionColor3D(FunctionRole3D::Warning));
+                    ImGui::TextWrapped("-> %s", edit.c_str());
+                    ImGui::PopStyleColor();
+                }
+            };
+            const auto scalar = [&](const char *en, const char *zh, double active, double edit) {
+                row(en, zh, number(active), number(edit), active != edit);
+            };
+#define ROW(en, zh, member) scalar(en, zh, p.member, staged.member)
+            ROW("Nx", "X 节点", nx); ROW("Nz", "Z 节点", nz);
+            ROW("Spacing (m)", "间距（m）", spacing);
+            ROW("Uniform Vp (m/s)", "均匀 Vp（m/s）", vp); ROW("Uniform Vs (m/s)", "均匀 Vs（m/s）", vs);
+            ROW("Uniform density (kg/m3)", "均匀密度（kg/m³）", density);
+            ROW("Layered (0/1)", "分层（0/1）", layered);
+            row("Layer table", "层表", std::to_string(p.layers.size()), std::to_string(staged.layers.size()) + l(" (edited)", "（内容已修改）"), p.layers != staged.layers);
+            ROW("External terrain (0/1)", "外部地形（0/1）", importedSurface);
+            ROW("Datum (m)", "高程基准（m）", surfaceDatum);
+            row("Terrain samples", "高程样点", std::to_string(p.surfaceSamples.size()), std::to_string(staged.surfaceSamples.size()) + l(" (edited)", "（内容已修改）"), p.surfaceSamples != staged.surfaceSamples);
+            ROW("Relief (m)", "起伏振幅（m）", relief); ROW("Wavelength (m)", "地形波长（m）", wavelength);
+            ROW("Flatten (0=auto)", "展平（0=自动）", flattenDepth);
+            ROW("Frequency (Hz)", "主频（Hz）", frequency);
+            scalar("Source kind (0=force, 1=moment)", "震源（0=力，1=矩）", static_cast<int>(p.source.kind), static_cast<int>(staged.source.kind));
+            const auto direction = [&](const auto &v) { return number(v[0]) + ", " + number(v[1]) + ", " + number(v[2]); };
+            row("Force direction XYZ (raw)", "力方向 XYZ（原值）", direction(p.source.direction), direction(staged.source.direction), p.source.direction != staged.source.direction);
+            ROW("Force (N/m)", "体力（N/m）", forcePerLength); ROW("Moment (N)", "各向同性矩（N）", momentPerLength);
+            ROW("Source X (-1=center)", "震源 X（-1=居中）", sourceX); ROW("Source Z", "震源 Z", sourceZ);
+            ROW("Duration (s)", "时长（s）", duration); ROW("Step cap (0=duration)", "步数上限（0=按时长）", maxSteps);
+            ROW("CFL", "CFL", cfl); ROW("Absorption (0/1)", "吸收层（0/1）", absorbing);
+            ROW("X sponge cells", "X 吸收格数", spongeX); ROW("Z sponge cells", "底部吸收格数", spongeZ);
+            ROW("Sponge strength", "吸收强度", spongeStrength);
+            ROW("Receiver start", "接收起点", receiverStart); ROW("Receiver count", "接收道数", receiverCount);
+            ROW("Receiver index stride", "接收节点间隔", receiverStride); ROW("Receiver depth index", "接收深度索引", receiverDepth);
+            ROW("Sample interval ms (0=dt)", "采样毫秒（0=dt）", sampleIntervalMs);
+#undef ROW
+            scalar("Backend (0=CPU, 1=CUDA)", "核心（0=CPU，1=CUDA）", static_cast<int>(simulation.backend().kind), selectedBackend);
+            scalar("CPU threads requested", "请求 CPU 线程", activeSettings.cpuThreads, settings.cpuThreads);
+            scalar("CUDA device requested (-1=auto)", "请求 CUDA 卡（-1=自动）", activeSettings.cudaDevice, settings.cudaDevice);
+            ImGui::EndTable();
+        }
+        if (p.layered && ImGui::CollapsingHeader(l("Active layers", "生效层表"), ImGuiTreeNodeFlags_DefaultOpen)) {
+            for (std::size_t i = 0; i < p.layers.size(); ++i) {
+                const auto &v = p.layers[i];
+                ImGui::TextWrapped("%zu: h %.2f m | Vp %.1f | Vs %.1f | rho %.1f", i + 1, v.thickness, v.vp, v.vs, v.density);
+            }
+        }
+        ImGui::SeparatorText(l("Numerical diagnostics", "数值诊断"));
+        ImGui::Text("PPW %.3f | J min %.6f", d.ppw, g.minJacobian);
+        ImGui::Text("dt wave %.6f ms", d.waveDt * 1000);
+        ImGui::Text("dt damping %.6f ms", d.dampingDt * 1000);
+        ImGui::Text("dt source %.6f ms", d.sourceDt * 1000);
+        ImGui::Text("%s %d", l("CPU workers", "生效 CPU 线程"), simulation.backend().workerThreads);
+        ImGui::Text("%s %d", l("CUDA device", "生效 CUDA 卡"), simulation.backend().cudaDevice);
+        ImGui::Text("%.3f s | %.4f ms/step", d.totalStepMs / 1000, simulation.step() ? d.totalStepMs / simulation.step() : 0);
+        ImGui::PopTextWrapPos();
         ImGui::End();
     }
     void wavefield() {
@@ -1139,7 +1409,7 @@ struct Workbench {
                 if (ImGui::IsKeyPressed(ImGuiKey_R))
                     fit = true;
                 if (ImGui::IsKeyPressed(ImGuiKey_F))
-                    parameterWindow = waveWindow = recordWindow = layout = true;
+                    parameterWindow = summaryWindow = waveWindow = recordWindow = layout = true;
                 if (ImGui::IsKeyPressed(ImGuiKey_G))
                     grid = !grid;
                 if (ImGui::IsKeyPressed(ImGuiKey_B))
@@ -1193,6 +1463,107 @@ struct Workbench {
     }
 };
 } // namespace
+int validateModelWorkflow2D() {
+    std::string error;
+    SeisWave::Ui::AppRuntime runtime;
+    if (!runtime.open("2D model workflow validation", true, error))
+        throw std::runtime_error(error);
+    Workbench app;
+    app.staged.nx = 160; app.staged.nz = 144;
+    app.staged.relief = 5; app.staged.duration = .01; app.staged.maxSteps = 13;
+    app.staged.sampleIntervalMs = .5;
+    fitAcquisition(app.staged);
+    if (!app.apply() || !app.simulation.advance(13, error))
+        throw std::runtime_error(app.error + error);
+    const auto saved = app.simulation.parameters();
+    const double dt = app.simulation.dt();
+    const auto out = SeisWave::Ui::outputRoot() / "validation/model-2d/ui";
+    std::filesystem::create_directories(out);
+    const auto path = out / std::filesystem::path(u8"可复现曲面模型.vts");
+    const auto utf8 = path.u8string();
+    std::snprintf(app.modelPath.data(), app.modelPath.size(), "%s", reinterpret_cast<const char *>(utf8.c_str()));
+    if (!writeModelVts(app.simulation, path, app.activeSettings, error))
+        throw std::runtime_error(error);
+    app.staged.frequency = 45; app.staged.spacing = 2; app.staged.sampleIntervalMs = 1;
+    if (!app.dirty() || !app.loadModel() || app.dirty() || app.simulation.step() != 0 ||
+        app.simulation.parameters() != saved || app.simulation.dt() != dt || app.simulation.recordDt() != .0005)
+        throw std::runtime_error("2D model load did not synchronize staged/active/dt/sample interval: " + app.error);
+    app.staged.frequency = 50; app.staged.spacing = 2; app.staged.sampleIntervalMs = 1;
+    if (!app.apply() || app.dirty() || app.simulation.dt() == dt || app.liveRecords().dt != .001)
+        throw std::runtime_error("2D rebuild failed to synchronize dt / record interval / parameters");
+    for (int i = 0; i < 6; ++i) {
+        const int sizes[3][2]{{1600,1000},{1280,800},{960,640}};
+        const int *size = sizes[i % 3];
+        glfwSetWindowSize(runtime.window(), size[0], size[1]);
+        setLanguage3D(i < 3 ? 1 : 0);
+        applyTheme3D(i < 3 ? 9 : 4);
+        SeisWave::Ui::setInterfaceFontSize(i < 3 ? 20.f : 26.f);
+        app.category = i % 3 == 0 ? 0 : i % 3 == 1 ? 1 : 4;
+        if (i >= 3) app.staged.frequency = 60; // Visible pending marker without modifying active dt.
+        for (int frame = 0; frame < 4; ++frame) {
+            runtime.begin();
+            app.toolbar(); app.controls(); app.activeParameters(); app.wavefield(); app.records();
+            runtime.present();
+        }
+        const auto *parameters = ImGui::FindWindowByName(label("Parameters and run", "参数与运行").c_str());
+        const auto *summary = ImGui::FindWindowByName(label("Active simulation parameters", "当前模拟参数").c_str());
+        if (!parameters || !summary || !summary->Active ||
+            (!app.compactSidebar && summary->Pos.x < parameters->Pos.x + parameters->Size.x - 2) ||
+            summary->Size.x < 150 || !app.domainVisible || app.liveRecords().dt != .001)
+            throw std::runtime_error("2D active-parameter panel layout/data synchronization failed");
+        int w, h;
+        glfwGetFramebufferSize(runtime.window(), &w, &h);
+        if (!SeisWave::Ui::capture(out / ("parameters-" + std::to_string(i) + ".ppm"), w, h))
+            throw std::runtime_error("2D model workflow capture failed");
+    }
+    // Exercise the actual export controls and button, independently of parameter-pane scrolling.
+    glfwSetWindowSize(runtime.window(), 1280, 800);
+    setLanguage3D(1);
+    SeisWave::Ui::setInterfaceFontSize(20);
+    app.component = 3;
+    const auto snapshotPath = out / "selected-wavefield.vts";
+    const auto snapshotUtf8 = snapshotPath.u8string();
+    std::snprintf(app.vts.data(), app.vts.size(), "%s", reinterpret_cast<const char *>(snapshotUtf8.c_str()));
+    const auto drawExport = [&]() {
+        runtime.begin();
+        ImGui::SetNextWindowPos({20, 20});
+        ImGui::SetNextWindowSize({460, 680});
+        ImGui::Begin("Wavefield export controls");
+        app.snapshotControls();
+        ImGui::End();
+        runtime.present();
+    };
+    const auto clickExport = [&](const ImRect &rect) {
+        const auto point = rect.GetCenter();
+        auto &io = ImGui::GetIO();
+        io.AddMousePosEvent(point.x, point.y);
+        io.AddMouseButtonEvent(0, true); drawExport();
+        io.AddMouseButtonEvent(0, false); drawExport();
+    };
+    drawExport(); drawExport();
+    clickExport(app.snapshotSaveRect);
+    const auto snapshotText = [&]() {
+        std::ifstream in(snapshotPath);
+        return std::string(std::istreambuf_iterator<char>(in), {});
+    };
+    if (!app.error.empty() || snapshotText().find("<PointData Scalars=\"Pressure\">") == std::string::npos ||
+        snapshotText().find("Name=\"Vz\"") != std::string::npos)
+        throw std::runtime_error("2D snapshot button did not follow displayed pressure: " + app.error);
+    clickExport(app.snapshotToggleRect);
+    if (app.snapshotFollowDisplay || !app.snapshotComponents[3])
+        throw std::runtime_error("2D snapshot manual toggle lost the displayed selection");
+    clickExport(app.snapshotComponentRects[1]);
+    clickExport(app.snapshotSaveRect);
+    if (!app.snapshotComponents[1] || snapshotText().find("Name=\"Vz\"") == std::string::npos ||
+        snapshotText().find("Name=\"Pressure\"") == std::string::npos)
+        throw std::runtime_error("2D snapshot manual multi-component export failed");
+    int captureWidth, captureHeight;
+    glfwGetFramebufferSize(runtime.window(), &captureWidth, &captureHeight);
+    SeisWave::Ui::capture(out / "snapshot-components.ppm", captureWidth, captureHeight);
+    std::cout << "PASS 2D model UI: UTF-8 VTS restore, staged/active synchronization, recomputed dt, 0.5/1 ms records, "
+                 "responsive summary in 6 bilingual/theme/size/font layouts; actual snapshot controls follow pressure / manual Vz+pressure export\n";
+    return 0;
+}
 int runWorkbench2D(bool smoke, bool homeTest) {
     std::string error;
     SeisWave::Ui::AppRuntime runtime;
@@ -1509,6 +1880,7 @@ int runWorkbench2D(bool smoke, bool homeTest) {
         app.toolbar();
         app.controls();
         app.modelDialogs();
+        app.activeParameters();
         if (app.dirty())
             app.running = false;
         app.wavefield();

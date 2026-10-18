@@ -28,6 +28,7 @@ struct Parameters {
     int spongeX{16}, spongeZ{16};
     double spongeStrength{3};
     int receiverStart{2}, receiverCount{96}, receiverStride{2}, receiverDepth{1};
+    double sampleIntervalMs{}; // 0 = each accepted step; otherwise uniform output times, linearly interpolated.
     bool layered{};
     bool importedSurface{};
     double surfaceDatum{}; // z = datum - elevation; depth is positive downward.
@@ -71,6 +72,7 @@ class Simulation {
     int step() const;
     int totalSteps() const;
     double dt() const;
+    double recordDt() const;
     const Parameters &parameters() const;
     const Grid &grid() const;
     const Diagnostics &diagnostics() const;
@@ -83,6 +85,21 @@ class Simulation {
     struct Impl;
     std::unique_ptr<Impl> impl_;
 };
-bool writeSnapshot(const Simulation &, const std::filesystem::path &, std::string &);
+struct SnapshotExportOptions {
+    // Vx, Vz, velocity magnitude, pressure, Sxx, Szz, Sxz. Defaults preserve the legacy API output.
+    std::array<bool, 7> components{true, true, false, false, true, true, true};
+    bool includeMaterial{true};
+};
+inline SnapshotExportOptions displayedSnapshotOptions(int component) {
+    SnapshotExportOptions options;
+    options.components.fill(false);
+    options.includeMaterial = false;
+    constexpr int indices[]{1, 0, 2, 3}; // Display order: Vz, Vx, |V|, pressure.
+    if (component >= 0 && component < 4)
+        options.components[indices[component]] = true;
+    return options;
+}
+bool writeSnapshot(const Simulation &, const std::filesystem::path &, std::string &,
+                   const SnapshotExportOptions & = {});
 bool writeReceivers(const Simulation &, const std::filesystem::path &, std::string &);
 } // namespace Seis2D::Curvilinear

@@ -81,7 +81,8 @@ bool AppRuntime::open(const char *title, bool hidden, std::string &error) {
     glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
     glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE);
     glfwWindowHint(GLFW_SAMPLES, 4);
-    glfwWindowHint(GLFW_MAXIMIZED, windowState.maximized ? GLFW_TRUE : GLFW_FALSE);
+    const bool maximize = windowState.saved ? windowState.maximized : !hidden;
+    glfwWindowHint(GLFW_MAXIMIZED, maximize ? GLFW_TRUE : GLFW_FALSE);
     window_ = glfwCreateWindow(windowState.width, windowState.height, title, nullptr, nullptr);
     if (!window_) {
         error = "OpenGL 4.3 window creation failed.";
@@ -154,7 +155,7 @@ bool AppRuntime::open(const char *title, bool hidden, std::string &error) {
     }
     if (!hidden) {
         glfwShowWindow(window_);
-        if (windowState.maximized)
+        if (maximize)
             glfwMaximizeWindow(window_);
     }
     error.clear();

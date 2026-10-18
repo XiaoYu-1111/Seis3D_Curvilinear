@@ -1,0 +1,125 @@
+{
+  "dem": {
+    "input": "D:\\Data file\\航飞ECW\\导出区域数据\\3_jingbiancenter.dem",
+    "driver": "GTiff",
+    "fallback_reader": true,
+    "shape": [
+      840,
+      1181
+    ],
+    "resolution": [
+      38.218514,
+      38.218514
+    ],
+    "bounds": [
+      19297006.0441718,
+      4142698.99134407,
+      19342142.109205797,
+      4174802.5431040702
+    ],
+    "transform": [
+      38.218514,
+      0.0,
+      19297006.0441718,
+      0.0,
+      -38.218514,
+      4174802.5431040702,
+      0.0,
+      0.0,
+      1.0
+    ],
+    "crs": null,
+    "horizontal_metres_per_unit": 1.0,
+    "height_unit": "m",
+    "height_to_metres": 1.0,
+    "raster_scale": 1.0,
+    "raster_offset": 0.0,
+    "nodata": "NaN",
+    "vertical_datum_conversion": "none",
+    "original_header": {
+      "reader": "metric_USGS_fixed_records",
+      "projection_code": 9,
+      "projection_parameters": [
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        111000000.0,
+        0.0,
+        19500000.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "horizontal_unit": "m",
+      "vertical_unit": "m",
+      "original_z_resolution": 0.1,
+      "original_height_range": [
+        1093.0,
+        1731.0
+      ],
+      "coordinate_datum": "not_assigned",
+      "header_sha256": "c9d013a313c12fc73b57503225ff0c3de88aadaf8c253b10d9e5d40144229dbf",
+      "pixel_center_extent": [
+        19297025.1534288,
+        4142718.10060107,
+        19342122.9999488,
+        4174783.43384707
+      ]
+    }
+  },
+  "endpoints_dem": [
+    [
+      19302358.4043901,
+      4154011.7073371527
+    ],
+    [
+      19310947.404490102,
+      4154011.7073371527
+    ]
+  ],
+  "full_line_length_m": 8589.000100001693,
+  "selected_distance_range_m": [
+    0.0,
+    5000.0
+  ],
+  "distance_mode": "grid",
+  "distance_definition": "horizontal projected grid length",
+  "requested_spacing_m": 1.0,
+  "last_interval_m": 1.0,
+  "interpolation": "bilinear",
+  "height_processing": "source scale/offset and unit-to-metre conversion only",
+  "smoothing": "none",
+  "datum_shift_m": 0,
+  "invalid_samples": 0,
+  "selector_version": 2,
+  "selector_direction": "horizontal",
+  "roi_start_offset": [
+    5333.250961299986,
+    10793.606736082584
+  ],
+  "longest_valid_segment_applied": true,
+  "kept_source_distance_range_m": [
+    0.0,
+    5000.0
+  ],
+  "discarded_samples": 0,
+  "exported_utc": "2026-10-18T01:18:04.776625+00:00",
+  "samples": 5001,
+  "output_length_m": 5000.0,
+  "elevation_range_m": [
+    1341.0574705043223,
+    1495.8194523870297
+  ],
+  "roi_dem_coordinates": [
+    19302358.4043901,
+    19310947.404490102,
+    4153511.7073371527,
+    4154511.7073371527
+  ]
+}

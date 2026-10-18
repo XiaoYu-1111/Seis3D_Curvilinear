@@ -9,6 +9,7 @@
 #include <fstream>
 #include <iomanip>
 #include <limits>
+#include <locale>
 #include <stdexcept>
 #ifdef SEIS3D_HAS_OPENMP
 #include <omp.h>
@@ -40,6 +41,8 @@ struct Simulation::Impl {
     std::array<std::vector<double>, 2> sourceGradient;
     Point::Mesh mesh;
     std::vector<Receiver> receivers;
+    std::vector<Receiver> probes;
+    std::vector<std::array<double, 2>> previousSamples;
     BackendInfo3D backend;
     Diagnostics diagnostics;
     int step{}, total{}, threads{1};
@@ -110,17 +113,32 @@ struct Simulation::Impl {
         diagnostics.finite &= std::isfinite(diagnostics.energy) && std::isfinite(diagnostics.maxVelocity);
     }
     void sample() {
+        for (auto &r : probes) {
+            r.vx.clear();
+            r.vz.clear();
+        }
 #ifdef SEIS3D_HAS_CUDA
         if (cuda) {
-            cuda->sample(receivers);
-            return;
-        }
+            cuda->sample(probes);
+        } else
 #endif
-        for (auto &r : receivers) {
+        for (auto &r : probes) {
             const auto q = grid.index(r.x + ghost, r.z + ghost);
             r.vx.push_back(fields[0][0][q]);
             r.vz.push_back(fields[0][1][q]);
         }
+        const double interval = p.sampleIntervalMs > 0 ? p.sampleIntervalMs * .001 : dt;
+        const double end = (step + 1) * dt;
+        // Integer sample number avoids accumulated rounding error and preserves SEG-Y's uniform axis.
+        for (std::size_t n = receivers.front().vx.size(); n * interval <= end + 1e-9 * dt; ++n) {
+            const double a = std::clamp((n * interval - step * dt) / dt, 0.0, 1.0);
+            for (std::size_t r = 0; r < receivers.size(); ++r) {
+                receivers[r].vx.push_back(std::lerp(previousSamples[r][0], probes[r].vx.back(), a));
+                receivers[r].vz.push_back(std::lerp(previousSamples[r][1], probes[r].vz.back(), a));
+            }
+        }
+        for (std::size_t r = 0; r < receivers.size(); ++r)
+            previousSamples[r] = {probes[r].vx.back(), probes[r].vz.back()};
     }
 };
 Simulation::Simulation() = default;
@@ -137,7 +155,7 @@ bool Simulation::initialize(const Parameters &p, std::string &error, BackendKind
         require(p.nx >= 8 && p.nz >= 8 && p.nx <= maxAxisNodes && p.nz <= maxAxisNodes,
                 "2D dimensions must be in 8..16384 (subject to RAM/VRAM).");
         for (double v : {p.spacing, p.relief, p.wavelength, p.flattenDepth, p.frequency, p.duration, p.cfl,
-                         p.forcePerLength, p.momentPerLength, p.spongeStrength, p.surfaceDatum})
+                         p.forcePerLength, p.momentPerLength, p.spongeStrength, p.surfaceDatum, p.sampleIntervalMs})
             require(std::isfinite(v), "2D parameters must be finite.");
         require(p.spacing > 0 && p.frequency > 0 && p.frequency <= 1e6 && p.duration > 0 &&
                     p.duration <= 10 && p.cfl >= .02 && p.cfl <= .8 && p.wavelength > 0 &&
@@ -147,6 +165,8 @@ bool Simulation::initialize(const Parameters &p, std::string &error, BackendKind
                 "Invalid 2D spacing, frequency, duration, CFL or source amplitude.");
         require(material(p.vp, p.vs, p.density),
                 "Require positive material values and positive elastic bulk modulus.");
+        require(p.sampleIntervalMs == 0 || (p.sampleIntervalMs >= .01 && p.sampleIntervalMs <= 1000),
+                "Record interval must be 0 (each step) or 0.01..1000 ms.");
         require(p.maxSteps >= 0 && p.maxSteps <= 20000 && settings.cpuThreads >= 0 &&
                     settings.cpuThreads <= 64,
                 "Step cap must be 0..20000; CPU workers must be 0..64.");
@@ -185,7 +205,9 @@ bool Simulation::initialize(const Parameters &p, std::string &error, BackendKind
         const auto memory = Seis3D::Curvilinear::queryBackendMemory3D(kind, available.cudaDevice);
         const double bytes =
             count * (60.0 + (explosive ? 2 : 0)) * sizeof(double) +
-            static_cast<double>(p.receiverCount) * (p.maxSteps ? p.maxSteps + 1 : 20001) * 2 * sizeof(double);
+            static_cast<double>(p.receiverCount) *
+                (p.sampleIntervalMs > 0 ? std::floor(p.duration / (p.sampleIntervalMs * .001)) + 1
+                                       : (p.maxSteps ? p.maxSteps + 1 : 20001)) * 2 * sizeof(double);
         require(!memory.hostAvailableBytes || bytes < memory.hostAvailableBytes * .8,
                 "Insufficient RAM for a transactional 2D rebuild.");
         if (kind == BackendKind3D::Cuda)
@@ -350,12 +372,16 @@ bool Simulation::initialize(const Parameters &p, std::string &error, BackendKind
             receiver.x = p.receiverStart + r * p.receiverStride;
             receiver.z = p.receiverDepth;
             receiver.position = g.coordinates[g.index(receiver.x + ghost, receiver.z + ghost)];
-            receiver.vx.reserve(s.total + 1);
-            receiver.vz.reserve(s.total + 1);
+            const auto samples = static_cast<std::size_t>(std::floor(s.total * s.dt /
+                (p.sampleIntervalMs > 0 ? p.sampleIntervalMs * .001 : s.dt))) + 1;
+            receiver.vx.reserve(samples);
+            receiver.vz.reserve(samples);
             receiver.vx.push_back(0);
             receiver.vz.push_back(0);
             s.receivers.push_back(std::move(receiver));
         }
+        s.probes = s.receivers;
+        s.previousSamples.resize(s.receivers.size(), {0, 0});
         s.mesh = {g.nx,
                   g.nz,
                   count,
@@ -481,6 +507,7 @@ bool Simulation::reset(std::string &error) {
             r.vx.assign(1, 0);
             r.vz.assign(1, 0);
         }
+        std::fill(s.previousSamples.begin(), s.previousSamples.end(), std::array<double, 2>{0, 0});
         return true;
     } catch (const std::exception &ex) {
         error = ex.what();
@@ -501,6 +528,9 @@ int Simulation::totalSteps() const {
 }
 double Simulation::dt() const {
     return impl_ ? impl_->dt : 0;
+}
+double Simulation::recordDt() const {
+    return impl_ ? (impl_->p.sampleIntervalMs > 0 ? impl_->p.sampleIntervalMs * .001 : impl_->dt) : 0;
 }
 const Parameters &Simulation::parameters() const {
     return impl_->p;
@@ -552,14 +582,18 @@ Snapshot Simulation::snapshot() const {
 #endif
     return {impl_->fields[0]};
 }
-bool writeSnapshot(const Simulation &s, const std::filesystem::path &path, std::string &error) {
+bool writeSnapshot(const Simulation &s, const std::filesystem::path &path, std::string &error,
+                   const SnapshotExportOptions &options) {
     try {
+        if (std::none_of(options.components.begin(), options.components.end(), [](bool v) { return v; }))
+            throw std::runtime_error("Select at least one wavefield export component.");
         const auto data = s.snapshot();
         const auto &p = s.parameters();
         const auto &g = s.grid();
         std::ofstream out(path);
         if (!out)
             throw std::runtime_error("Cannot create 2D VTS file.");
+        out.imbue(std::locale::classic());
         out << std::setprecision(17)
             << "<?xml version=\"1.0\"?>\n<VTKFile type=\"StructuredGrid\" version=\"0.1\" "
                "byte_order=\"LittleEndian\"><StructuredGrid WholeExtent=\"0 "
@@ -577,20 +611,36 @@ bool writeSnapshot(const Simulation &s, const std::filesystem::path &path, std::
         scalar("SourceDirectionX", direction[0]);
         scalar("SourceDirectionZ", direction[2]);
         scalar("SimulationDt", s.dt());
+        scalar("RecordIntervalSeconds", s.recordDt());
         scalar("SimulationStep", s.step());
         scalar("TIME_VALUE", s.step() * s.dt());
-        out << "</FieldData><Piece Extent=\"0 " << p.nx - 1 << " 0 0 0 " << p.nz - 1 << "\"><PointData>\n";
-        const char *names[]{"Vx", "Vz", "Sxx", "Szz", "Sxz", "Vp", "Vs", "Density"};
-        for (int f = 0; f < 8; ++f) {
+        const char *names[]{"Vx", "Vz", "VelocityMagnitude", "Pressure", "Sxx", "Szz", "Sxz", "Vp", "Vs", "Density"};
+        const auto first = std::find(options.components.begin(), options.components.end(), true) - options.components.begin();
+        out << "</FieldData><Piece Extent=\"0 " << p.nx - 1 << " 0 0 0 " << p.nz - 1
+            << "\"><PointData Scalars=\"" << names[first] << "\">\n";
+        for (int f = 0; f < 10; ++f) {
+            if (f < 7 ? !options.components[f] : !options.includeMaterial)
+                continue;
             out << "<DataArray type=\"Float64\" Name=\"" << names[f] << "\" format=\"ascii\">\n";
             for (int k = 0; k < p.nz; ++k)
                 for (int i = 0; i < p.nx; ++i) {
                     const auto q = g.index(i + ghost, k + ghost);
-                    out << (f < 5    ? data.fields[f][q]
-                            : f == 5 ? g.vp[q]
-                            : f == 6 ? g.vs[q]
-                                     : g.density[q])
-                        << ' ';
+                    double value{};
+                    if (f < 2)
+                        value = data.fields[f][q];
+                    else if (f == 2)
+                        value = std::sqrt(data.fields[0][q] * data.fields[0][q] + data.fields[1][q] * data.fields[1][q]);
+                    else if (f == 3) {
+                        // Plane strain: Syy=lambda*(Sxx+Szz)/(2*(lambda+mu)); p=-tr(S)/3.
+                        // Same physical pressure as the CPU/CUDA display, without Float32 conversion.
+                        const double mu = g.density[q] * g.vs[q] * g.vs[q];
+                        const double lambda = g.density[q] * g.vp[q] * g.vp[q] - 2 * mu;
+                        value = -(1 + lambda / (2 * (lambda + mu))) * (data.fields[2][q] + data.fields[3][q]) / 3;
+                    } else if (f < 7)
+                        value = data.fields[f - 2][q];
+                    else
+                        value = f == 7 ? g.vp[q] : f == 8 ? g.vs[q] : g.density[q];
+                    out << value << ' ';
                 }
             out << "\n</DataArray>\n";
         }
@@ -616,7 +666,8 @@ bool writeReceivers(const Simulation &s, const std::filesystem::path &path, std:
         if (!out)
             throw std::runtime_error("Cannot create 2D receiver CSV.");
         out << std::setprecision(17)
-            << "# P-SV plane strain; x,z in m; velocity in m/s; t=0 included\n# dt=" << s.dt()
+            << "# P-SV plane strain; x,z in m; velocity in m/s; t=0 included\n# dt=" << s.recordDt()
+            << "\n# solver_dt=" << s.dt()
             << "\n# backend=" << s.backend().deviceName;
         const auto &p = s.parameters();
         const auto direction = SeisWave::unitSourceDirection(p.source);
@@ -628,7 +679,7 @@ bool writeReceivers(const Simulation &s, const std::filesystem::path &path, std:
         int id = 0;
         for (const auto &r : s.receivers()) {
             for (std::size_t t = 0; t < r.vx.size(); ++t)
-                out << id << ',' << r.position[0] << ',' << r.position[1] << ',' << t * s.dt() << ','
+                out << id << ',' << r.position[0] << ',' << r.position[1] << ',' << t * s.recordDt() << ','
                     << r.vx[t] << ',' << r.vz[t] << '\n';
             ++id;
         }
