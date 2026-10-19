@@ -368,6 +368,20 @@ void RecordView::drawContent(const RecordDataView &s, int &selected) {
         ImGui::TextUnformatted(tr3D("No receivers in the active model."));
         return;
     }
+    // Empty or inconsistent imported traces must not reach times.front/back or
+    // the hover sample-index calculation. Keep the previous plot cache unused.
+    if (s.components.size() > 3 || !std::isfinite(s.dt) || s.dt <= 0 ||
+        std::any_of(receivers.begin(), receivers.end(), [&](const auto &trace) {
+            return !std::isfinite(trace.startTime) ||
+                   std::any_of(trace.channels.begin(), trace.channels.begin() + s.components.size(),
+                               [&](const auto &channel) {
+                                   return channel.empty() || channel.size() != trace.channels[0].size();
+                               });
+        })) {
+        ImGui::TextWrapped("%s", l("Records need a positive sample interval and nonempty component traces.",
+                                   "记录需要有效的正采样间隔，且各分量道不能为空。"));
+        return;
+    }
     selected = std::clamp(selected, 0, total - 1);
     const int choices = static_cast<int>(s.components.size()) + (s.components.size() > 1 ? 1 : 0);
     settings.component = std::clamp(settings.component, 0, choices - 1);

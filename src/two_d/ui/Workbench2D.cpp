@@ -114,7 +114,7 @@ struct Workbench {
     int lastHeight{};
     Seis3D::Curvilinear::CudaDeviceInventory3D inventory;
     ImRect homeRect;
-    bool layout{true}, domainVisible{}, compactSidebar{}, focusParameters{};
+    bool layout{true}, domainVisible{}, focusParameters{};
     int lastWidth{};
     float recordHeight{};
     bool parameterWindow{true}, waveWindow{true}, recordWindow{true}, summaryWindow{true};
@@ -142,6 +142,7 @@ struct Workbench {
         setPath(csv, "receivers.csv"); setPath(segy, "receivers.sgy");
     }
     bool apply() {
+        running = false;
         if (!simulation.initialize(staged, error, static_cast<BackendKind3D>(selectedBackend), settings))
             return false;
         activeSettings = settings;
@@ -216,6 +217,10 @@ struct Workbench {
         }
     }
     void exportSegy() {
+        if (!segy[0]) {
+            error = l("Choose a SEG-Y file name.", "请选择 SEG-Y 文件名。");
+            return;
+        }
         const auto data = displayedRecords();
         int selected = 0;
         for (std::size_t c = 0; c < data.components.size(); ++c)
@@ -486,18 +491,16 @@ struct Workbench {
             ImGui::DockBuilderRemoveNode(id);
             ImGui::DockBuilderAddNode(id, ImGuiDockNodeFlags_DockSpace);
             ImGui::DockBuilderSetNodeSize(id, {vp->WorkSize.x - 24, vp->WorkSize.y - height - 20});
-            ImGuiID main = id, left{}, records{}, summary{}, parameters{};
+            ImGuiID main = id, left{}, records{};
             ImGui::DockBuilderSplitNode(main, ImGuiDir_Left,
-                                        std::clamp(ImGui::GetFontSize() * 35.f / vp->Size.x, .36f, .62f),
-                                        &parameters, &main);
-            ImGui::DockBuilderSplitNode(parameters, ImGuiDir_Left, .55f, &left, &summary);
-            compactSidebar = false;
+                                        std::clamp(ImGui::GetFontSize() * 20.f / vp->Size.x, .25f, .40f),
+                                        &left, &main);
             focusParameters = true;
             const float recordRatio =
                 std::clamp((ImGui::GetFontSize() * 7 + 110) / vp->WorkSize.y, .31f, .50f);
             ImGui::DockBuilderSplitNode(main, ImGuiDir_Down, recordRatio, &records, &main);
             ImGui::DockBuilderDockWindow(label("Parameters and run", "参数与运行").c_str(), left);
-            ImGui::DockBuilderDockWindow(label("Active simulation parameters", "当前模拟参数").c_str(), summary);
+            ImGui::DockBuilderDockWindow(label("Active simulation parameters", "当前模拟参数").c_str(), left);
             ImGui::DockBuilderDockWindow(label("Curved X-Z wavefield", "曲面 X–Z 波场").c_str(), main);
             ImGui::DockBuilderDockWindow(label("Receiver records", "接收记录").c_str(), records);
             ImGui::DockBuilderFinish(id);
@@ -1040,11 +1043,18 @@ struct Workbench {
                 snapshotControls();
                 ImGui::SetNextItemWidth(-1);
                 ImGui::InputText("##2Dcsv", csv.data(), csv.size());
-                if (button("Export Vx / Vz CSV", "导出 Vx/Vz 记录 CSV", FunctionRole3D::Export, {-1, 0}))
+                ImGui::TextDisabled("%s", l("CSV exports the active simulation (Vx/Vz).", "CSV 导出当前模拟的 Vx/Vz 记录。"));
+                ImGui::BeginDisabled(useImported);
+                if (button("Export Vx / Vz CSV", "导出 Vx/Vz 记录 CSV", FunctionRole3D::Export, {-1, 0}) &&
                     writeReceivers(
                         simulation,
                         std::filesystem::path(std::u8string(reinterpret_cast<const char8_t *>(csv.data()))),
-                        error);
+                        error))
+                    status = l("Active simulation Vx/Vz records exported to CSV.", "当前模拟的 Vx/Vz 记录已导出为 CSV。");
+                ImGui::EndDisabled();
+                if (useImported)
+                    ImGui::TextWrapped("%s", l("Switch records to the simulation before exporting CSV; imported records can be exported as SEG-Y.",
+                                               "导出 CSV 前请将记录源切回当前模拟；导入记录可导出为 SEG-Y。"));
             }
         }
         if (parameterGroup(l("Diagnostics", "数值诊断"))) {
@@ -1550,7 +1560,7 @@ int validateModelWorkflow2D() {
         const auto *parameters = ImGui::FindWindowByName(label("Parameters and run", "参数与运行").c_str());
         const auto *summary = ImGui::FindWindowByName(label("Active simulation parameters", "当前模拟参数").c_str());
         if (!parameters || !summary || !summary->Active ||
-            (!app.compactSidebar && summary->Pos.x < parameters->Pos.x + parameters->Size.x - 2) ||
+            !parameters->DockId || parameters->DockId != summary->DockId ||
             summary->Size.x < 150 || !app.domainVisible || app.liveRecords().dt != .001)
             throw std::runtime_error("2D active-parameter panel layout/data synchronization failed");
         int w, h;
@@ -1614,6 +1624,34 @@ int validateModelWorkflow2D() {
     if (!app.error.empty() || !SeisWave::readSegy(segyFile, compatibleRecords, error) ||
         compatibleRecords.dt != .0005 || compatibleRecords.component != "Vz" || compatibleRecords.units != "scaled(m/s)")
         throw std::runtime_error("2D SEG-Y compatibility/gain/sampling controls were not applied: " + app.error + error);
+    // A rejected edit must stop a running session without replacing its model
+    // or discarding the receiver samples needed for export and analysis.
+    const auto previousParameters = app.simulation.parameters();
+    const auto previousSamples = app.simulation.receivers().front().vz;
+    app.running = true;
+    app.staged.receiverStart = app.staged.nx;
+    if (app.apply() || app.running || app.simulation.parameters() != previousParameters ||
+        app.simulation.receivers().front().vz != previousSamples)
+        throw std::runtime_error("Rejected acquisition edit changed active model/records or left the session running");
+    app.staged = previousParameters;
+    app.error.clear();
+    app.segy[0] = '\0';
+    app.exportSegy();
+    if (app.error.empty()) throw std::runtime_error("Blank SEG-Y destination was accepted");
+    // Exercise the shared analysis viewer with empty, mismatched and invalid-dt
+    // data; these previously reached unchecked sample/time array access.
+    for (int invalid = 0; invalid < 3; ++invalid) {
+        auto data = app.liveRecords();
+        if (invalid == 0) data.traces.front().channels[0] = {};
+        if (invalid == 1) data.traces.front().channels[1] = data.traces.front().channels[1].first(1);
+        if (invalid == 2) data.dt = 0;
+        runtime.begin();
+        ImGui::Begin("Invalid record validation");
+        app.recordView.drawContent(data, app.selectedReceiver);
+        ImGui::End();
+        runtime.present();
+    }
+    std::cout << "PASS workflow guards: rejected survey edit pauses and preserves model/records; blank SEG-Y path rejected; empty/mismatched/invalid-dt analysis is safe\n";
     std::cout << "PASS 2D model UI: UTF-8 VTS restore, staged/active synchronization, recomputed dt, 0.5/1 ms records, "
                  "responsive summary in 6 bilingual/theme/size/font layouts; actual snapshot controls follow pressure / manual Vz+pressure export; legacy SEG-Y gain/sampling\n";
     return 0;

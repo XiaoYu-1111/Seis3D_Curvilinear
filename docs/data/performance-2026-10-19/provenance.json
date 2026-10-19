@@ -1,0 +1,29 @@
+{
+  "date": "2026-10-19T15:50:33.3919558+08:00",
+  "gitHead": "7a9fa0ae74c8b9bc086360482c7a0d1dda63d23a",
+  "build": "Release",
+  "ompWaitPolicy": "PASSIVE",
+  "cartesianReference": "../SeisWaveLab_Cartesian_Workspace/SeisWaveLab_Cartesian/benchmarks/ComputeBenchmark.cpp",
+  "solverHashes": [
+    {
+      "Path": "src/two_d/CurvilinearSolver2D.cpp",
+      "Hash": "DB3DA9645557591A7E05D9ECBB1989C2C6129ABD0E947C482D2D006C3400620F"
+    },
+    {
+      "Path": "src/three_d/CurvilinearSolver.cpp",
+      "Hash": "945BD50B22DDD8A2F5C916EBE3F2B9DCD8195D4AA4726B3999463824A9BABD53"
+    },
+    {
+      "Path": "src/two_d/CudaEngine2D.cu",
+      "Hash": "FD9959F49B09882D6F211F5AEF8E642198A9E1DCCDB18963D7FE02A269894411"
+    },
+    {
+      "Path": "src/three_d/CudaEngine3D.cu",
+      "Hash": "0527FD8E677A575D8FC8C39AF0267268A8EE79239A4CAF332624C7F31A0BAAF1"
+    },
+    {
+      "Path": "benchmarks/ComputeBenchmark.cpp",
+      "Hash": "337AACE1FA9A5D34CC803F93C50FAB67005276A45CF06DABE828FC05F6FFD0EB"
+    }
+  ]
+}

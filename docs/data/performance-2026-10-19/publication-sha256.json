@@ -1,0 +1,14 @@
+{
+  "docs/data/performance-2026-10-19/trials.csv": "801319da67d41482cc9128389f3cc88f340994547779a3ff5b52bb6622b943cf",
+  "docs/data/performance-2026-10-19/summary.csv": "dc183ea1d720baa1ea9c7a3c13088546f98ab6aa8bf1f6c366b83a717286ca57",
+  "docs/data/performance-2026-10-19/hardware.json": "331a681c598d76c38e75b19fc745468e776fa0ce118e4e9002ec82faa01a3f2a",
+  "docs/data/performance-2026-10-19/COMPLETE.txt": "ab168d9a15f9e7bc144a4743e0fa70a1a5ceac6955ed5c808b8baab2ebc3c89d",
+  "docs/data/performance-2026-10-19/gpu-start.csv": "c39422d30558f5e0fe0b84b34c3595ba672335e4894dea5003609cb43f3a5769",
+  "docs/data/performance-2026-10-19/gpu-end.csv": "aed17326e3ef0b8ae4a5c01190edaa096c1ec7ba5032a8235a01cf7701ec6d57",
+  "docs/data/performance-2026-10-19/power-plan.txt": "3005b071c6539e5b5523deadb25a39311b4a78b0ac55c3e05806fba9bd2f1fbc",
+  "docs/data/performance-2026-10-19/provenance.json": "4523739a74d0cf99f898147097c551cec2322040769004dd8b3ab20473e9da5e",
+  "docs/images/performance/performance.png": "5da0ad8e94c0f26084ae49b183baacf2efb383fc8f5e552df35de3c7b914a067",
+  "docs/images/performance/speedup.png": "32e1f0003ee6b9358e74143a26cb078e8d71f8afdf24febbad5fceaa5dbdf17a",
+  "docs/images/performance/speedup.svg": "6006f8508c6c5c88b51bd3f784517d1364079305a038385d626079746984e82d",
+  "docs/PERFORMANCE_BENCHMARK.md": "09dd78fdcd2c61f183b31a63a26e3212c5df4eaf8133a82fb52b1ec7f65ffa23"
+}

@@ -13,12 +13,13 @@
 | 方程、边界闭合、差分、时间组合与诊断 | [数值原理](NUMERICAL_METHOD.md) |
 | 模型、震源、接收器、显示与快捷键 | [用户指南](USER_GUIDE.md) |
 | 接收几何及 CPU/CUDA 计时 | [采集与性能](ACQUISITION_AND_PERFORMANCE.md) |
+| 二维/三维三档 CPU/CUDA 实测、倍速曲线与原始数据 | [性能对比报告（2026-10-19）](PERFORMANCE_BENCHMARK.md) |
 | 分层介质与图标资源 | [层状模型](LAYERED_MODELS.md) |
 | VS、依赖、外部输出、设备选择与分发 | [构建说明](BUILDING.md) |
 | Git 上传内容及仓库边界 | [仓库组织](REPOSITORY_LAYOUT.md) |
 | 已验证事项与证据边界 | [数值验证状态](NUMERICS_AND_VALIDATION.md) |
 
-正文图片全部保存在本仓库 `docs/images`，GitHub 阅读不依赖外层 out。`images/capture.tsv` 保存已发表截图的算例与时间步元数据，供图集及复核使用。原始 PPM、模拟场和分析中间数据留在外层 `../out`。`VERIFICATION_*.md` 是历史检查记录，旧参数不代表当前默认设置，其中本地输出也不随仓库发布。
+正文图片全部保存在本仓库 `docs/images`，GitHub 阅读不依赖外层 out。`images/capture.tsv` 保存已发表截图的算例与时间步元数据，供图集及复核使用。原始 PPM、模拟场和分析中间数据留在外层 `../out`。旧版本验证记录中的有效证据已合并到 [当前验证说明](NUMERICS_AND_VALIDATION.md)，仅保留最新的 [0.16 专项验证](VERIFICATION_0_16.md)；性能实测、曲线和原始数据随 [性能报告](PERFORMANCE_BENCHMARK.md) 保存在仓库内。
 
 ## 生成离线说明和博客
 

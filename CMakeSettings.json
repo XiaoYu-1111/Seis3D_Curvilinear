@@ -8,6 +8,7 @@
       "buildRoot": "${projectDir}\\..\\out\\build\\${name}",
       "installRoot": "${projectDir}\\..\\out\\install\\${name}",
       "variables": [
+        {"name": "CMAKE_TOOLCHAIN_FILE", "value": "", "type": "FILEPATH"},
         {"name": "SEIS3D_ENABLE_CUDA", "value": "ON", "type": "BOOL"},
         {"name": "CMAKE_CUDA_ARCHITECTURES", "value": "75-real;86-real;89-real;120-real;75-virtual", "type": "STRING"}
       ]
@@ -20,6 +21,7 @@
       "buildRoot": "${projectDir}\\..\\out\\build\\${name}",
       "installRoot": "${projectDir}\\..\\out\\install\\${name}",
       "variables": [
+        {"name": "CMAKE_TOOLCHAIN_FILE", "value": "", "type": "FILEPATH"},
         {"name": "SEIS3D_ENABLE_CUDA", "value": "ON", "type": "BOOL"},
         {"name": "CMAKE_CUDA_ARCHITECTURES", "value": "75-real;86-real;89-real;120-real;75-virtual", "type": "STRING"}
       ]

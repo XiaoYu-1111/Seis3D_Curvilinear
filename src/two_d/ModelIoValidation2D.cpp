@@ -226,6 +226,17 @@ int main() {
         const auto out = std::filesystem::path(SEIS3D_OUTPUT_ROOT) / "validation/model-2d";
         std::filesystem::create_directories(out);
         roundTrip(out);
+        {
+            Simulation empty, session;
+            std::string error;
+            const auto path = out / "csv-nested" / "records.csv";
+            check(!writeReceivers(empty, path, error), "Uninitialized CSV export was accepted");
+            check(session.initialize(fixture(), error), error);
+            check(!writeReceivers(session, {}, error), "Empty CSV path was accepted");
+            check(writeReceivers(session, path, error), error);
+            check(text(path).find("receiver,x_m,z_m,time_s,vx_m_s,vz_m_s") != std::string::npos,
+                  "Nested CSV export lost its header");
+        }
         sampling(out, BackendKind3D::Cpu);
         snapshotSelection(out, BackendKind3D::Cpu);
         const auto cuda = Seis3D::Curvilinear::queryBackend3D(BackendKind3D::Cuda);

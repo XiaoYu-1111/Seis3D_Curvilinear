@@ -8,6 +8,8 @@
 
 **完整说明**：[二维工作流与五场理论](docs/TWO_D_WORKFLOW.md) · [完整学术说明](docs/PROJECT_MANUAL.md) · [曲网格波场理论整理](docs/CURVILINEAR_WAVE_THEORY.md) · [数值原理](docs/NUMERICAL_METHOD.md) · [操作指南](docs/USER_GUIDE.md) · [构建说明](docs/BUILDING.md) · [文档导航](docs/README.md)
 
+**性能实测**：[二维/三维 CPU 与 CUDA 对比报告、倍速曲线及原始数据](docs/PERFORMANCE_BENCHMARK.md)（2026-10-19，六档模型、60 轮测试）。
+
 ![二维曲面剖面与三维曲面体网格主页](docs/images/two-d/home.png)
 
 二维提供“建模—采集—运行—显示—导出”流程、真实曲面节点网格、独立模型/波场色标、Vx/Vz 接收测线和 CSV/VTS 导出。默认 200×200、h=2.5 m、f0=30 Hz，每方向支持 8–16384 个物理节点，实际大小受内存/显存限制。二维采用平面应变线源假设，与三维点源的振幅和几何扩散不同；尚不包含 SH 分量。

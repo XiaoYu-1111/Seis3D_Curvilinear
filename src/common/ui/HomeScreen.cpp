@@ -144,6 +144,7 @@ Route runHomeScreen(bool smoke, int choice) {
     bool animate = true;
     Route result = Route::Home;
     std::array<ImRect, 2> buttons{};
+    std::array<ImRect, 2> illustrations{};
     for (int frame = 0; !glfwWindowShouldClose(runtime.window()); ++frame) {
         if (smoke && !choice && frame % 8 == 0 && frame <= 40) {
             const int sizes[3][2]{{1600, 1000}, {1280, 800}, {960, 640}};
@@ -166,7 +167,7 @@ Route runHomeScreen(bool smoke, int choice) {
             applyTheme3D(0);
         }
         if (smoke && choice && frame == 2) {
-            const auto at = buttons[choice - 1].GetCenter();
+            const auto at = illustrations[choice - 1].GetCenter();
             io.AddMousePosEvent(at.x, at.y);
             io.AddMouseButtonEvent(0, true);
         }
@@ -248,7 +249,14 @@ Route runHomeScreen(bool smoke, int choice) {
                     std::max(90.f, ImGui::GetContentRegionAvail().y -
                                        (compact ? (interfaceFontSize() > 22 ? 104.f : 152.f) : 206.f))};
                 illustration(ImGui::GetWindowDrawList(), at, size, dimension != 0);
-                ImGui::Dummy(size);
+                if (ImGui::InvisibleButton("##enterIllustration", size))
+                    result = dimension ? Route::ThreeD : Route::TwoD;
+                illustrations[dimension] = {ImGui::GetItemRectMin(), ImGui::GetItemRectMax()};
+                if (ImGui::IsItemHovered()) {
+                    ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+                    ImGui::SetTooltip("%s", dimension ? l("Enter 3D simulation", "进入三维曲面模拟")
+                                                      : l("Enter 2D simulation", "进入二维曲面模拟"));
+                }
                 ImGui::TextDisabled("%s", l("Program-drawn geometry illustration", "程序绘制的曲网格示意"));
                 ImGui::Spacing();
                 if (!compact || interfaceFontSize() <= 22)

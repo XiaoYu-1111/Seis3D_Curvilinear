@@ -10,7 +10,9 @@
 | `src`、`include` | CPU/CUDA、界面、I/O 与验证代码 |
 | `src/common`、`src/two_d`、`src/three_d` | 共享基础服务、独立二维与三维实现；各维度含自己的 ui |
 | `resources/icons`、`resources/AppIcon.rc.in`、`shaders` | 应用原始资源 |
+| `resources/icons/regular` | 规则网格图标原图及多尺寸 ICO，保留设计资产供 Git 同步 |
 | `docs`、`docs/images` | 学术说明、操作说明和发表图片 |
+| `docs/PERFORMANCE_BENCHMARK.md`、`docs/data/performance-2026-10-19`、`docs/images/performance` | 按用户要求发布的性能实测报告、原始 CSV、版本信息与图表快照；运行中间输出仍在外层 out |
 | `tools` | 分析、导出验证、参考提取及博客打包工具 |
 | `third_party` | 已使用的库、必要参考源码及来源说明 |
 | `LICENSE`、`THIRD_PARTY_NOTICES.md` | 项目许可与第三方来源 |

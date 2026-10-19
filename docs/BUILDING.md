@@ -31,6 +31,8 @@ CMake 会拒绝在指定外层 out 以外创建构建树。仓库重命名不改
 
 需要 CMake 3.25+、C++20、MSVC x64/Windows SDK 和 Ninja。图形工作台需要 OpenGL 4.3、GLFW/GLEW SDK；通过 `SEIS3D_GLFW_ROOT`、`SEIS3D_GLEW_ROOT` 设置本机路径，现有 D 盘默认值仅适用于原开发机。默认预设启用 CUDA；Toolkit 须兼容所选 MSVC 工具集。VS 直接打开本仓库，选择 `x64-Release` / `x64-Debug`，将 `SeisWaveLab_Curvilinear` 设为启动目标。
 
+本项目直接查找 CUDA、OpenGL 和本机 GLFW/GLEW SDK，预设和 CMakeSettings 显式将 `CMAKE_TOOLCHAIN_FILE` 置空，避免 VS 自动注入本机 vcpkg 工具链。修改工具链后需在 VS 中“删除缓存并重新配置”；若 CUDA 已安装却报告找不到 cudart DLL，或缺少 `CUDA::cudart` / `OpenGL::GL`，请检查缓存是否仍加载了旧工具链。
+
 以下命令在本仓库根目录的 MSVC x64 开发者终端执行：
 
 ```powershell

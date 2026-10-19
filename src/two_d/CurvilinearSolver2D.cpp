@@ -662,9 +662,16 @@ bool writeSnapshot(const Simulation &s, const std::filesystem::path &path, std::
 }
 bool writeReceivers(const Simulation &s, const std::filesystem::path &path, std::string &error) {
     try {
+        if (!s.initialized())
+            throw std::runtime_error("Initialize a simulation before exporting traces.");
+        if (path.empty() || path.filename().empty())
+            throw std::runtime_error("Choose a receiver CSV file name.");
+        if (!path.parent_path().empty())
+            std::filesystem::create_directories(path.parent_path());
         std::ofstream out(path);
         if (!out)
             throw std::runtime_error("Cannot create 2D receiver CSV.");
+        out.imbue(std::locale::classic());
         out << std::setprecision(17)
             << "# P-SV plane strain; x,z in m; velocity in m/s; t=0 included\n# dt=" << s.recordDt()
             << "\n# solver_dt=" << s.dt()

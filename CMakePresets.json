@@ -16,6 +16,7 @@
       },
       "cacheVariables": {
         "CMAKE_CXX_COMPILER": "cl",
+        "CMAKE_TOOLCHAIN_FILE": "",
         "SEIS3D_BUILD_GUI": "ON",
         "SEIS3D_BUILD_VALIDATION": "ON",
         "SEIS3D_ENABLE_CUDA": "ON",
