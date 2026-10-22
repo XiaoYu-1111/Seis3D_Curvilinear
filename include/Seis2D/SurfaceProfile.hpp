@@ -7,6 +7,9 @@ namespace Seis2D::Curvilinear {
 using SurfaceSamples = std::vector<std::array<double, 2>>; // x (m), elevation (m, positive up).
 // Transactional reader: an error leaves the destination unchanged.
 bool readSurfaceProfile(const std::filesystem::path &, SurfaceSamples &, std::string &);
+// Stretch X to [0, targetSpan], preserve elevation, and PCHIP-sample uniformly.
+// Always pass the original profile to avoid cumulative resampling loss.
+SurfaceSamples resampleSurfaceProfile(const SurfaceSamples &, double targetSpan, std::size_t sampleCount);
 class SurfaceProfile {
   public:
     explicit SurfaceProfile(const SurfaceSamples &);

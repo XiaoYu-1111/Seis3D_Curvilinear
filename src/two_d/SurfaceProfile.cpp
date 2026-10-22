@@ -63,6 +63,27 @@ std::array<double, 2> SurfaceProfile::sample(double x) const {
                 (-2 * t * t * t + 3 * t * t) * b + (t * t * t - t * t) * h * n,
             (6 * t * t - 6 * t) * (a - b) / h + (3 * t * t - 4 * t + 1) * m + (3 * t * t - 2 * t) * n};
 }
+SurfaceSamples resampleSurfaceProfile(const SurfaceSamples &source, double targetSpan, std::size_t count) {
+    if (!std::isfinite(targetSpan) || targetSpan <= 0 || count < 2 || count > 1000000)
+        throw std::runtime_error("Surface resampling requires positive finite span and 2..1000000 nodes.");
+    const SurfaceProfile curve(source);
+    const double origin = source.front()[0], span = source.back()[0] - origin;
+    if (!std::isfinite(span) || span <= 0)
+        throw std::runtime_error("Surface profile span is invalid.");
+    SurfaceSamples result;
+    result.reserve(count);
+    for (std::size_t i = 0; i < count; ++i) {
+        const double t = static_cast<double>(i) / static_cast<double>(count - 1);
+        const double x = i + 1 == count ? targetSpan : t * targetSpan;
+        const double elevation = i == 0 ? source.front()[1]
+                                 : i + 1 == count ? source.back()[1]
+                                                  : curve.sample(origin + t * span)[0];
+        if (!std::isfinite(elevation) || (i && x <= result.back()[0]))
+            throw std::runtime_error("Resampled surface is not finite or strictly increasing.");
+        result.push_back({x, elevation});
+    }
+    return result;
+}
 bool readSurfaceProfile(const std::filesystem::path &path, SurfaceSamples &destination, std::string &error) {
     try {
         if (std::filesystem::file_size(path) > 64 * 1024 * 1024)

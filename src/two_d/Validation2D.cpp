@@ -1,10 +1,12 @@
 #include "PointKernels2D.hpp"
 #include "PointKernels3D.hpp"
 #include "Seis2D/CurvilinearSolver2D.hpp"
+#include "Seis2D/SurfacePresets.hpp"
 #include <algorithm>
 #include <cmath>
 #include <fstream>
 #include <iostream>
+#include <limits>
 #include <stdexcept>
 using namespace Seis2D::Curvilinear;
 namespace {
@@ -150,6 +152,60 @@ int main(int argc, char **argv) {
     try {
         reduction();
         std::string error;
+        {
+            // Check deployed source shapes at physical widths, not merely point counts.
+            for (const auto &preset : surfacePresets) {
+                SurfaceSamples original;
+                check(readSurfaceProfile(std::filesystem::path(SEIS2D_ELEVATION_PRESET_ROOT) / preset.file,
+                                         original, error), error.c_str());
+                const auto saved = original;
+                const SurfaceProfile curve(original);
+                for (double width : {1000., 2000., 4000.}) {
+                    const auto count = static_cast<std::size_t>(width / 2.5) + 1;
+                    const auto fitted = resampleSurfaceProfile(original, width, count);
+                    check(fitted.size() == count && fitted.front()[0] == 0 && fitted.back()[0] == width,
+                          "Terrain preset does not cover requested physical width");
+                    check(fitted.front()[1] == original.front()[1] && fitted.back()[1] == original.back()[1],
+                          "Terrain endpoints changed elevation");
+                    for (std::size_t i = 0; i < fitted.size(); ++i) {
+                        const double sourceX = fitted[i][0] / width * 1000.;
+                        check(std::abs(fitted[i][1] - curve.sample(sourceX)[0]) < 1e-10,
+                              "Terrain stretch changed elevation or normalized feature position");
+                        check(fitted[i][1] >= -100.00000001 && fitted[i][1] <= 100.00000001,
+                              "Terrain resampling overshot its elevation range");
+                    }
+                    // Exercise geometry construction and propagation for all 24 cases at a small mesh.
+                    Parameters p;
+                    p.nx = 81; p.nz = 96; p.spacing = width / 80;
+                    p.sourceZ = 20; p.receiverCount = 20; p.frequency = 5;
+                    p.duration = .01; p.maxSteps = 2; p.flattenDepth = 0;
+                    p.importedSurface = true; p.surfaceDatum = 0;
+                    p.surfaceSamples = resampleSurfaceProfile(original, width, p.nx);
+                    Simulation simulation;
+                    check(simulation.initialize(p, error) && simulation.advance(1, error) &&
+                              simulation.diagnostics().finite, error.c_str());
+                    check(original == saved, "Terrain resampling modified the original preset");
+                }
+            }
+            const SurfaceSamples shifted{{25, 10}, {75, 30}, {125, 10}};
+            const auto fitted = resampleSurfaceProfile(shifted, 2000, 9);
+            check(fitted[4][0] == 1000 && fitted[4][1] == 30 && fitted.front()[1] == 10,
+                  "Resampling failed to normalize nonzero X origin or preserve datum");
+            for (double width : {0., -1., std::numeric_limits<double>::infinity(),
+                                  std::numeric_limits<double>::quiet_NaN()}) {
+                bool rejected = false;
+                try { (void)resampleSurfaceProfile(shifted, width, 9); }
+                catch (const std::exception &) { rejected = true; }
+                check(rejected, "Invalid resampling width was accepted");
+            }
+            for (std::size_t count : {std::size_t{0}, std::size_t{1}, std::size_t{1000001}}) {
+                bool rejected = false;
+                try { (void)resampleSurfaceProfile(shifted, 2000, count); }
+                catch (const std::exception &) { rejected = true; }
+                check(rejected, "Invalid resampling count was accepted");
+            }
+            std::cout << "Terrain presets PASS: 8 shapes x 1/2/4 km, PCHIP amplitudes, endpoints, geometry, propagation and invalid input\n";
+        }
         const auto cuda = Seis3D::Curvilinear::queryBackend3D(BackendKind3D::Cuda);
         {
             const auto folder = std::filesystem::path(SEIS3D_OUTPUT_ROOT) / "validation/terrain-2d";

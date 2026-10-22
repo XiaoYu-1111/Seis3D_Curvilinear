@@ -211,13 +211,27 @@ class DEM:
                     nodata=s.nodata if s.nodata is None or np.isfinite(s.nodata) else 'NaN',
                     vertical_datum_conversion='none', original_header=self.extra)
 
-    def preview(self, max_size=850):
+    def preview(self, max_size=850, bounds=None):
         s = self.source
-        ratio = min(1.0, max_size / max(s.width, s.height))
-        h, w = max(1, int(s.height * ratio)), max(1, int(s.width * ratio))
-        z = s.read(1, out_shape=(h, w), masked=True, resampling=Resampling.nearest).astype('float64').filled(np.nan)
+        if max_size < 1:
+            raise ValueError('Preview size must be positive.')
+        window = Window(0,0,s.width,s.height)
+        if bounds is not None:
+            xmin,xmax,ymin,ymax = map(float,bounds)
+            if not np.isfinite([xmin,xmax,ymin,ymax]).all() or xmin >= xmax or ymin >= ymax:
+                raise ValueError('DEM zoom bounds must be finite with positive width and height.')
+            corners = np.array([(~s.transform)*(x,y) for x in (xmin,xmax) for y in (ymin,ymax)])
+            c0,r0 = np.maximum(0,np.floor(corners.min(axis=0))).astype(int)
+            c1,r1 = np.minimum([s.width,s.height],np.ceil(corners.max(axis=0))).astype(int)
+            if c1 <= c0 or r1 <= r0:
+                raise ValueError('DEM zoom region does not overlap the raster.')
+            window = Window(int(c0),int(r0),int(c1-c0),int(r1-r0))
+        ratio = min(1.0, max_size / max(window.width,window.height))
+        h, w = max(1,int(window.height*ratio)),max(1,int(window.width*ratio))
+        z = s.read(1,window=window,out_shape=(h,w),masked=True,
+                   resampling=Resampling.nearest).astype('float64').filled(np.nan)
         z = (z * self.scale + self.offset) * self.z_factor
-        t = s.transform * Affine.scale(s.width / w, s.height / h)
+        t = s.window_transform(window) * Affine.scale(window.width/w,window.height/h)
         col, row = np.meshgrid(np.arange(w + 1), np.arange(h + 1))
         x = t.a * col + t.b * row + t.c
         y = t.d * col + t.e * row + t.f
@@ -350,48 +364,384 @@ def longest_valid_segment(table, metadata):
     return result, updated
 
 
-def plot_map(dem, ax, table=None, roi=None):
+def plot_map(dem, ax, table=None, roi=None, *, view_bounds=None, color_limits=None, max_size=850):
     from matplotlib.patches import Rectangle
-    x,y,z = dem.preview()
-    image = ax.pcolormesh(x,y,z,shading='flat',cmap='terrain',rasterized=True)
+    from matplotlib.ticker import MaxNLocator
+    x,y,z = dem.preview(max_size=max_size,bounds=view_bounds)
+    # image = ax.pcolormesh(x,y,z,shading='flat',cmap='terrain',rasterized=True)
+    image = ax.pcolormesh(x,y,z,shading='flat',cmap='jet',rasterized=True)
+    if color_limits is not None:
+        image.set_clim(*color_limits)
     if roi is not None:
         xmin,xmax,ymin,ymax = roi
         ax.add_patch(Rectangle((xmin,ymin),xmax-xmin,ymax-ymin,fill=False,edgecolor='#db6d28',lw=1.5))
     if table is not None:
         ax.plot(table.dem_x,table.dem_y,color='red',lw=1.6,label='Selected profile')
         ax.scatter([table.dem_x.iloc[0]],[table.dem_y.iloc[0]],color='black',s=24,zorder=3)
-    ax.set(xlabel='DEM X (source coordinate units)',ylabel='DEM Y (source coordinate units)')
+    metric = dem.xy_factor == 1.0
+    ax.set(xlabel='X (m)' if metric else 'DEM X (source units)',
+           ylabel='Y (m)' if metric else 'DEM Y (source units)')
     ax.ticklabel_format(style='plain',useOffset=False)
+    ax.xaxis.set_major_locator(MaxNLocator(4))
+    ax.yaxis.set_major_locator(MaxNLocator(5))
+    ax.set_aspect('equal',adjustable='box')
+    publication_axes(ax)
+    if view_bounds is not None:
+        ax.set_xlim(view_bounds[0],view_bounds[1])
+        ax.set_ylim(view_bounds[2],view_bounds[3])
+        ax.set_aspect('equal',adjustable='box')
     return image
 
 
-def plot_profile(table, ax):
-    ax.plot(table.x_m,table.elevation_m,color='#254f66',lw=1.5)
-    ax.set(xlabel='Distance from selected start (m)',ylabel='Actual elevation (m)')
-    ax.grid(alpha=.2)
+def publication_axes(ax):
+    """Consistent print typography without changing global notebook settings."""
+    ax.tick_params(which='both',direction='in',top=True,right=True,labelsize=8,width=.6)
+    for spine in ax.spines.values():
+        spine.set_linewidth(.6)
+    for label in [ax.xaxis.label,ax.yaxis.label,ax.title,*ax.get_xticklabels(),*ax.get_yticklabels()]:
+        label.set_fontfamily('Times New Roman')
+        label.set_fontsize(9 if label in (ax.xaxis.label,ax.yaxis.label,ax.title) else 8)
+    for label in ax.texts:
+        label.set_fontfamily('Times New Roman')
+        label.set_fontsize(8)
 
 
-def export_profile(dem, table, metadata, output_dir=None, roi=None):
+def save_publication_figure(figure, folder, stem):
+    """One folder, consistent filenames: 600 dpi PNG plus vector PDF/SVG."""
+    folder=Path(folder)
+    folder.mkdir(parents=True,exist_ok=True)
+    for axis in figure.axes:
+        publication_axes(axis)
+    figure.savefig(folder/f'{stem}.png',dpi=600,facecolor='white')
+    figure.savefig(folder/f'{stem}.pdf',facecolor='white')
+    figure.savefig(folder/f'{stem}.svg',facecolor='white')
+
+
+def _dem_detail_figsize(bounds):
+    xmin,xmax,ymin,ymax=map(float,bounds)
+    height=float(np.clip(6.1*(ymax-ymin)/(xmax-xmin)+1.45,2.4,8.5))
+    return (7.2,height)
+
+
+def _dem_detail_colorbar(figure,image,ax):
+    return figure.colorbar(image,ax=ax,label='Elevation (m)',orientation='horizontal',
+                           location='bottom',pad=.14,fraction=.055,aspect=40,shrink=.9)
+
+
+def snapshot_map_figure(source, bounds=None):
+    """Freeze visible map data in an Agg figure; never save the ipympl canvas.
+
+    Reusing the live canvas for high-DPI export can send resize/renderer updates
+    to the frontend. Copy the existing mesh, scale and overlays instead.
+    """
+    from matplotlib.figure import Figure
+    from matplotlib.backends.backend_agg import FigureCanvasAgg
+    from matplotlib.collections import QuadMesh
+    from matplotlib.patches import Rectangle
+    if not source.axes:
+        raise ValueError('Interactive map has no axes.')
+    original=source.axes[0]
+    mesh=next((item for item in original.collections if isinstance(item,QuadMesh)),None)
+    if mesh is None:
+        raise ValueError('Interactive map background is unavailable; rebuild the map.')
+    view=tuple(map(float,bounds if bounds is not None else (*original.get_xlim(),*original.get_ylim())))
+    if len(view)!=4 or not np.isfinite(view).all() or view[0]>=view[1] or view[2]>=view[3]:
+        raise ValueError('Invalid map snapshot bounds.')
+    result=Figure(figsize=_dem_detail_figsize(view),layout='constrained')
+    FigureCanvasAgg(result)
+    ax=result.subplots()
+    coords=mesh.get_coordinates()
+    values=np.ma.array(mesh.get_array(),copy=True).reshape(coords.shape[0]-1,coords.shape[1]-1)
+    image=ax.pcolormesh(coords[:,:,0],coords[:,:,1],values,shading='flat',
+                        cmap=mesh.get_cmap(),vmin=mesh.get_clim()[0],vmax=mesh.get_clim()[1],rasterized=True)
+    for line in original.lines:
+        if line.get_visible() and line.get_gid() not in ('selection-handle','pending-endpoint'):
+            ax.plot(*line.get_data(),color=line.get_color(),lw=line.get_linewidth(),
+                    linestyle=line.get_linestyle(),marker=line.get_marker(),
+                    markersize=line.get_markersize(),zorder=line.get_zorder())
+    for patch in original.patches:
+        if isinstance(patch,Rectangle) and patch.get_gid()=='profile-roi' and patch.get_visible():
+            ax.add_patch(Rectangle(patch.get_xy(),patch.get_width(),patch.get_height(),fill=False,
+                                  edgecolor=patch.get_edgecolor(),lw=.7))
+    for text in original.texts:
+        if text.get_visible():
+            trans=ax.transAxes if text.get_transform() is original.transAxes else ax.transData
+            ax.text(*text.get_position(),text.get_text(),transform=trans,color=text.get_color(),
+                    ha=text.get_ha(),va=text.get_va(),fontsize=8)
+    ax.set(xlim=view[:2],ylim=view[2:],xlabel=original.get_xlabel(),ylabel=original.get_ylabel(),
+           title='(b) Enlarged DEM view',aspect='equal')
+    from matplotlib.ticker import MaxNLocator
+    ax.ticklabel_format(style='plain',useOffset=False)
+    ax.xaxis.set_major_locator(MaxNLocator(4));ax.yaxis.set_major_locator(MaxNLocator(5))
+    _dem_detail_colorbar(result,image,ax)
+    return result
+
+
+def _write_dem_zoom(dem, bounds, folder, table=None, color_limits=None):
+    """Read the selected raster window, not a magnified overview screenshot."""
+    import matplotlib.pyplot as plt
+    bounds = tuple(map(float,bounds))
+    _,_,local = dem.preview(max_size=2000,bounds=bounds)
+    if not np.isfinite(local).any():
+        raise ValueError('DEM zoom region has no valid elevation pixels.')
+    if color_limits is None:
+        _,_,overview = dem.preview()
+        valid = overview[np.isfinite(overview)]
+        if not valid.size:
+            raise ValueError('DEM overview has no valid elevations for a shared color scale.')
+        color_limits = (float(valid.min()),float(valid.max()))
+    if color_limits[0] == color_limits[1]:
+        color_limits = (color_limits[0]-.5,color_limits[1]+.5)
+    fig,ax=plt.subplots(figsize=_dem_detail_figsize(bounds),layout='constrained')
+    try:
+        image=plot_map(dem,ax,table,view_bounds=bounds,color_limits=color_limits,max_size=2000)
+        _dem_detail_colorbar(fig,image,ax)
+        ax.set_title('(b) Local DEM')
+        folder.mkdir(parents=True,exist_ok=True)
+        save_publication_figure(fig,folder,'dem_zoom')
+    finally:
+        plt.close(fig)
+    return dict(bounds_dem_coordinates=list(bounds),color_limits_m=list(map(float,color_limits)),
+                color_scale='shared with full DEM overview',raster_shape=list(local.shape),
+                sampling='native selected raster window; nearest-neighbour reduction only above 2000 pixels',
+                height_processing='source scale/offset and units applied; no smoothing or datum shift',
+                profile_overlay=table is not None)
+
+
+def export_dem_zoom(dem, bounds, output_dir=None, table=None):
+    """Export only the selected DEM map, independently of profile CSV export."""
+    folder=Path(output_dir or dem.output_dir)/datetime.now().strftime('dem_zoom_%Y%m%d_%H%M%S_%f')
+    detail=_write_dem_zoom(dem,bounds,folder,table)
+    (folder/'dem_zoom_selection.json').write_text(json.dumps(dict(
+        exported_utc=datetime.now(timezone.utc).isoformat(),dem=dem.info(),dem_map_zoom=detail),
+        ensure_ascii=False,indent=2,allow_nan=False),encoding='utf-8')
+    return folder
+
+
+def profile_plot_reference(table, height_view='absolute'):
+    """Display reference only; never modify sampled/exported elevations."""
+    if height_view not in ('absolute', 'start', 'mean'):
+        raise ValueError('Height view must be absolute, start or mean.')
+    heights = np.asarray(table.elevation_m, dtype=float)
+    good = heights[np.isfinite(heights)]
+    if not good.size:
+        raise ValueError('No finite elevation samples to plot.')
+    if height_view == 'mean':
+        return float(good.mean())
+    # An invalid first sample is not an assumed zero-height datum.
+    return float(good[0])
+
+
+def profile_plot_window(table, distance_range_m):
+    """Clip at exact distances with linear boundary interpolation, no smoothing.
+
+    Interpolation only joins adjacent finite samples, preserving NoData gaps.
+    Returned distances remain relative to the full exported profile start.
+    """
+    x = np.asarray(table.x_m,dtype=float)
+    bounds = np.asarray(distance_range_m,dtype=float)
+    if (bounds.shape != (2,) or not np.isfinite(bounds).all() or len(x) < 2 or
+        not np.isfinite(x).all() or not (np.diff(x) > 0).all() or
+        not x[0] <= bounds[0] < bounds[1] <= x[-1]):
+        raise ValueError('Zoom range must lie inside the profile with start < end.')
+    a,b = bounds
+    z = np.asarray(table.elevation_m,dtype=float)
+    def at(position):
+        i = int(np.searchsorted(x,position))
+        if i < len(x) and x[i] == position:
+            return z[i]
+        if not np.isfinite(z[i-1:i+1]).all():
+            return np.nan
+        return float(np.interp(position,x[i-1:i+1],z[i-1:i+1]))
+    inside = (x > a) & (x < b)
+    return pd.DataFrame(dict(x_m=np.r_[a,x[inside],b], elevation_m=np.r_[at(a),z[inside],at(b)]))
+
+
+def plot_profile(table, ax, *, height_view='absolute', annotate=True, spacing_m=None, distance_range_m=None):
+    """Wide profile with a declared datum, two fills and true extrema.
+
+    Missing values remain gaps. Width arrows are deliberately omitted: natural
+    DEM terrain has no unique hill/valley width without a defined measurement.
+    """
+    from matplotlib.ticker import MaxNLocator, ScalarFormatter
+    reference = profile_plot_reference(table, height_view)
+    first_invalid = not np.isfinite(table.elevation_m.iloc[0])
+    if spacing_m is None:
+        steps = np.diff(np.asarray(table.x_m,dtype=float))
+        steps = steps[np.isfinite(steps) & (steps > 0)]
+        spacing_m = float(np.median(steps)) if steps.size else None
+    if distance_range_m is not None:
+        table = profile_plot_window(table,distance_range_m)
+    x = np.asarray(table.x_m, dtype=float)
+    original = np.asarray(table.elevation_m, dtype=float)
+    y = original if height_view == 'absolute' else original-reference
+    baseline = reference if height_view == 'absolute' else 0.0
+    valid = np.isfinite(x) & np.isfinite(y)
+    if not valid.any():
+        raise ValueError('No finite distance/elevation pairs to plot.')
+    domain = x[np.isfinite(x)]
+    ax.set_facecolor('white')
+    ax.set_axisbelow(True)
+    ax.grid(True, color='#bcbcbc', alpha=.24, linewidth=.35)
+    ax.axhline(baseline, color='#858b8c', lw=.45, zorder=2)
+    ax.fill_between(x, y, baseline, where=valid & (y >= baseline),
+                    interpolate=True, color='#a8bfa3', alpha=.28, linewidth=0, zorder=1)
+    ax.fill_between(x, y, baseline, where=valid & (y <= baseline),
+                    interpolate=True, color='#a1c6d5', alpha=.28, linewidth=0, zorder=1)
+    ax.plot(x, y, color='#28566a', lw=.85, solid_capstyle='round',solid_joinstyle='round',zorder=3)
+    length = float(domain.max()-domain.min())
+    intervals = np.diff(x)
+    intervals = intervals[np.isfinite(intervals) & (intervals > 0)]
+    spacing = float(spacing_m) if spacing_m is not None else (float(np.median(intervals)) if intervals.size else None)
+    length_label = f'{length/1000:g} km' if length >= 1000 else f'{length:g} m'
+    sampling = f' | {spacing:g} m sampling' if spacing is not None else ''
+    reference_label = ('first valid sample' if first_invalid else 'start') if height_view != 'mean' else 'sample mean'
+    if distance_range_m is not None:
+        reference_label = 'full profile '+reference_label
+    datum = f'{reference_label} = {reference:.2f} m'
+    title = f'{length_label} elevation profile{sampling}'
+    if distance_range_m is not None:
+        title = f'{domain.min():g}–{domain.max():g} m detail ({length_label}){sampling}'
+    ax.set_title(title+'\n'+('Fill reference: ' if height_view == 'absolute' else 'Relative to ')+datum,
+                 fontsize=14, pad=10)
+    ylabel = {'absolute':'Elevation (m)', 'start':'Elevation relative to start (m)',
+              'mean':'Elevation relative to sample mean (m)'}[height_view]
+    if height_view == 'start' and first_invalid:
+        ylabel = 'Elevation relative to first valid sample (m)'
+    ax.set(xlabel='Horizontal distance (m)', ylabel=ylabel)
+    ax.xaxis.label.set_size(12)
+    ax.yaxis.label.set_size(12)
+    ax.tick_params(direction='out', labelsize=11, length=4, width=.8)
+    ax.xaxis.set_major_locator(MaxNLocator(nbins=10))
+    ax.yaxis.set_major_locator(MaxNLocator(nbins=6))
+    for axis in (ax.xaxis, ax.yaxis):
+        formatter = ScalarFormatter(useOffset=False)
+        formatter.set_scientific(False)
+        axis.set_major_formatter(formatter)
+    lo, hi = float(y[valid].min()), float(y[valid].max())
+    span = max(hi-lo, 1.0)
+    ax.set_ylim(lo-.24*span, hi+.24*span)
+    if length > 0:
+        ax.set_xlim(float(domain.min()), float(domain.max()))
+    if annotate:
+        candidates = [int(np.flatnonzero(valid)[np.argmin(y[valid])]),
+                      int(np.flatnonzero(valid)[np.argmax(y[valid])])]
+        for index in dict.fromkeys(candidates):
+            is_high = y[index] == hi
+            fraction = (x[index]-domain.min())/length if length else .5
+            align = 'left' if fraction < .12 else ('right' if fraction > .88 else 'center')
+            ax.annotate(f'({x[index]:g} m, {y[index]:+.2f} m)' if height_view != 'absolute'
+                        else f'({x[index]:g} m, {y[index]:.2f} m)',
+                        (x[index], y[index]), xytext=(0, 12 if is_high else -14),
+                        textcoords='offset points', ha=align, va='bottom' if is_high else 'top',
+                        fontsize=11, annotation_clip=False)
+    for spine in ax.spines.values():
+        spine.set_linewidth(.9)
+    return reference
+
+
+def _export_profile_files(dem, table, metadata, output_dir=None, roi=None, *, height_view='absolute', annotate=True,
+                          zoom_range_m=None, map_figure=None, map_view_bounds=None, folder=None,
+                          viewport_figure=None, map_scope=None):
     if len(table) < 2 or not np.isfinite(table[['x_m','elevation_m','dem_x','dem_y']]).all().all():
         raise ValueError('Export refused: selected profile includes NoData/out-of-bounds samples. Shorten the range or explicitly keep the longest valid segment.')
     if not (np.diff(table.x_m) > 0).all():
         raise ValueError('Export distances must increase strictly.')
-    folder = Path(output_dir or dem.output_dir)/datetime.now().strftime('profile_%Y%m%d_%H%M%S_%f')
+    reference = profile_plot_reference(table, height_view)
+    if zoom_range_m is not None:
+        profile_plot_window(table,zoom_range_m)  # Validate before creating any output.
+    folder = Path(folder) if folder is not None else Path(output_dir or dem.output_dir)/datetime.now().strftime('profile_%Y%m%d_%H%M%S_%f')
     folder.mkdir(parents=True,exist_ok=False)
     table[['x_m','elevation_m']].to_csv(folder/'surface_profile.csv',index=False,float_format='%.9f')
     table.to_csv(folder/'profile_with_coordinates.csv',index=False,float_format='%.9f')
     metadata = dict(metadata, exported_utc=datetime.now(timezone.utc).isoformat(),samples=len(table),
                     output_length_m=float(table.x_m.iloc[-1]), elevation_range_m=[float(table.elevation_m.min()),float(table.elevation_m.max())],
-                    roi_dem_coordinates=list(roi) if roi is not None else None)
+                    roi_dem_coordinates=list(roi) if roi is not None else None,
+                    profile_plot=dict(height_view=height_view, reference_elevation_m=reference,
+                                      annotate_extrema=bool(annotate), csv_heights='unchanged source elevations',
+                                      zoom_distance_range_m=list(map(float,zoom_range_m)) if zoom_range_m is not None else None,
+                                      zoom_boundary_interpolation='linear between adjacent valid samples only',
+                                      zoom_reference='same as full profile; horizontal distances are not reset'))
     (folder/'selection.json').write_text(json.dumps(metadata,ensure_ascii=False,indent=2,allow_nan=False),encoding='utf-8')
     import matplotlib.pyplot as plt
-    figure,ax = plt.subplots(figsize=(10,3.8),layout='constrained')
-    plot_profile(table,ax)
-    figure.savefig(folder/'profile.png',dpi=160)
+    figure,ax = plt.subplots(figsize=(7.2,2.8),layout='constrained')
+    plot_profile(table,ax,height_view=height_view,annotate=annotate,spacing_m=metadata.get('requested_spacing_m'))
+    save_publication_figure(figure,folder,'profile')
     plt.close(figure)
-    figure,ax = plt.subplots(figsize=(9,6),layout='constrained')
-    image = plot_map(dem,ax,table,roi)
+    if zoom_range_m is not None:
+        figure,ax = plt.subplots(figsize=(7.2,2.8),layout='constrained')
+        plot_profile(table,ax,height_view=height_view,annotate=annotate,
+                     spacing_m=metadata.get('requested_spacing_m'),distance_range_m=zoom_range_m)
+        save_publication_figure(figure,folder,'profile_zoom')
+        plt.close(figure)
+    figure,ax = plt.subplots(figsize=(7.2,5),layout='constrained')
+    image = plot_map(dem,ax,table,roi,max_size=2000)
+    if map_view_bounds is not None:
+        from matplotlib.patches import Rectangle
+        a,b,c,d=map_view_bounds
+        ax.add_patch(Rectangle((a,c),b-a,d-c,fill=False,edgecolor='#252525',lw=.7,ls='--'))
     figure.colorbar(image,ax=ax,label='Elevation (m)')
-    figure.savefig(folder/'dem_with_profile.png',dpi=150)
+    ax.set_title('(a) DEM overview')
+    save_publication_figure(figure,folder,'dem_with_profile')
+    color_limits=image.get_clim()
     plt.close(figure)
+    bounds=map_view_bounds if map_view_bounds is not None else roi
+    if map_figure is not None and map_view_bounds is not None:
+        save_publication_figure(map_figure,folder,'dem_zoom')
+        metadata['dem_map_zoom']=dict(bounds_dem_coordinates=list(map(float,bounds)),
+            source='detached snapshot of interactive map data',scope=map_scope,
+            color_scale='unchanged from interactive figure',capture='Agg figure; live canvas untouched')
+    elif bounds is not None:
+        metadata['dem_map_zoom']=_write_dem_zoom(dem,bounds,folder,table,color_limits)
+        metadata['dem_map_zoom']['source']='selected region; interactive viewport unavailable'
+    if viewport_figure is not None:
+        save_publication_figure(viewport_figure,folder,'dem_view')
+        view_ax=viewport_figure.axes[0]
+        metadata['dem_current_view']=dict(bounds_dem_coordinates=list(map(float,(*view_ax.get_xlim(),*view_ax.get_ylim()))),
+                                         source='detached snapshot of current viewport')
+    metadata['figure_export']=dict(style='publication',png_dpi=600,formats=['png','pdf','svg'])
+    (folder/'README.txt').write_text(
+        'DEM / profile results\n'
+        'dem_with_profile: full DEM overview; dashed black box marks exported viewport when available.\n'
+        'dem_zoom: local DEM area resolved by export scope (see selection.json).\n'
+        'dem_view: exact current viewport, when interactive map is available. Export uses a detached canvas.\n'
+        'profile: full sampled elevation profile. profile_zoom: optional distance-window detail.\n'
+        'Each figure is supplied as 600 dpi PNG, PDF and SVG. Raster map content remains raster in vector files.\n'
+        'surface_profile.csv: simulation input with unchanged source elevations.\n'
+        'profile_with_coordinates.csv: full sampling coordinates. selection.json: provenance and view bounds.\n',encoding='utf-8')
+    metadata['files']=sorted(p.name for p in folder.iterdir() if p.is_file())
+    (folder/'selection.json').write_text(json.dumps(metadata,ensure_ascii=False,indent=2,allow_nan=False),encoding='utf-8')
     return folder
+
+
+def export_profile(dem, table, metadata, output_dir=None, roi=None, **options):
+    """Publish a complete bundle; failed exports stay explicitly incomplete."""
+    # Support direct callers without ever passing a live widget into savefig.
+    source=options.pop('map_figure',None)
+    viewport=options.pop('viewport_figure',None)
+    local=None
+    if source is not None:
+        local=snapshot_map_figure(source,options.get('map_view_bounds'))
+    if viewport is not None:
+        viewport=snapshot_map_figure(viewport)
+    name=datetime.now().strftime('profile_%Y%m%d_%H%M%S_%f')
+    parent=Path(output_dir or dem.output_dir)
+    pending=parent/(name+'.incomplete')
+    final=parent/name
+    try:
+        _export_profile_files(dem,table,metadata,output_dir,roi,folder=pending,
+                              map_figure=local,viewport_figure=viewport,**options)
+        record=json.loads((pending/'selection.json').read_text(encoding='utf-8'))
+        record['export_status']='complete'
+        (pending/'selection.json').write_text(json.dumps(record,ensure_ascii=False,indent=2,allow_nan=False),encoding='utf-8')
+        pending.rename(final)
+        return final
+    except Exception as exc:
+        if pending.exists():
+            (pending/'EXPORT_ERROR.txt').write_text('Incomplete export; not a finished result.\n'+str(exc),encoding='utf-8')
+            raise RuntimeError(f'导出未完成；中间结果及错误说明保存在 {pending}。原因：{exc}') from exc
+        raise
+    finally:
+        for figure in (local,viewport):
+            if figure is not None:
+                figure.clear()

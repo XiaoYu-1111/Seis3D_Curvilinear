@@ -14,6 +14,7 @@
 #include "Seis2D/CurvilinearSolver2D.hpp"
 #include "Seis2D/ModelPresets2D.hpp"
 #include "Seis2D/ModelIo2D.hpp"
+#include "Seis2D/SurfacePresets.hpp"
 #include "imgui.h"
 #include "imgui_internal.h"
 #include "implot.h"
@@ -95,6 +96,10 @@ struct Workbench {
     std::vector<Layer> layerDraft;
     bool openLayers{}, openTerrain{}, zeroSurfaceX{true};
     int layerPreset{-1};
+    int terrainPreset{-1}, activeTerrainPreset{-1};
+    SurfaceSamples terrainPresetSource, activeTerrainPresetSource;
+    int terrainResampledNx{};
+    double terrainResampledSpacing{};
     std::string layerError;
     ImRect layerEditRect, layerUseRect, terrainDoneRect;
     int renderStrideX{1}, renderStrideZ{1};
@@ -143,8 +148,12 @@ struct Workbench {
     }
     bool apply() {
         running = false;
+        if (!syncTerrainPreset())
+            return false;
         if (!simulation.initialize(staged, error, static_cast<BackendKind3D>(selectedBackend), settings))
             return false;
+        activeTerrainPreset = terrainPreset;
+        activeTerrainPresetSource = terrainPresetSource;
         activeSettings = settings;
         ++recordGeneration;
         recordView.invalidate();
@@ -314,6 +323,8 @@ struct Workbench {
         const auto oldParameters = staged;
         const auto oldSettings = settings;
         const int oldBackend = selectedBackend;
+        const int oldTerrainPreset = terrainPreset;
+        terrainPreset = -1; // A saved model owns its explicit surface samples.
         staged = document.parameters;
         settings = document.compute;
         // GPU ordinal is machine-local. Resolve an available device on this machine again.
@@ -325,8 +336,10 @@ struct Workbench {
             staged = oldParameters;
             settings = oldSettings;
             selectedBackend = oldBackend;
+            terrainPreset = oldTerrainPreset;
             return false;
         }
+        terrainPresetSource.clear();
         updateTerrainPreview();
         status = fallback ? l("Model rebuilt at t=0 on CPU (CUDA unavailable here).", "模型已从 t=0 重建；本机 CUDA 不可用，采用 CPU。")
                           : l("Model and all simulation parameters restored at t=0.", "模型及全部模拟参数已恢复，从 t=0 开始。" );
@@ -524,6 +537,104 @@ struct Workbench {
             terrainPreviewZ.push_back(curve.sample(x)[0]);
         }
     }
+    bool syncTerrainPreset() {
+        if (terrainPreset < 0 || !staged.importedSurface)
+            return true;
+        try {
+            if (staged.nx < 8 || staged.nx > maxAxisNodes || !std::isfinite(staged.spacing) || staged.spacing <= 0)
+                throw std::runtime_error("Terrain preset requires valid X nodes and positive spacing.");
+            if (terrainResampledNx != staged.nx || terrainResampledSpacing != staged.spacing) {
+                auto samples = resampleSurfaceProfile(terrainPresetSource, (staged.nx - 1) * staged.spacing,
+                                                       static_cast<std::size_t>(staged.nx));
+                staged.surfaceSamples = std::move(samples);
+                terrainResampledNx = staged.nx;
+                terrainResampledSpacing = staged.spacing;
+                updateTerrainPreview();
+            }
+            return true;
+        } catch (const std::exception &e) {
+            error = e.what();
+            return false;
+        }
+    }
+    bool chooseTerrainPreset(int index) {
+        if (index < 0 || index >= static_cast<int>(surfacePresets.size()))
+            return false;
+        const auto path = SeisWave::Ui::elevationExampleRoot() / surfacePresets[index].file;
+        SurfaceSamples source;
+        if (!readSurfaceProfile(path, source, error))
+            return false;
+        try {
+            const auto pathText = path.u8string();
+            if (pathText.size() >= surfacePath.size())
+                throw std::runtime_error("Terrain preset path is too long.");
+            if (staged.nx < 8 || staged.nx > maxAxisNodes || !std::isfinite(staged.spacing) || staged.spacing <= 0)
+                throw std::runtime_error("Set valid X nodes and spacing before choosing a terrain preset.");
+            auto samples = resampleSurfaceProfile(source, (staged.nx - 1) * staged.spacing,
+                                                   static_cast<std::size_t>(staged.nx));
+            terrainPresetSource = std::move(source);
+            staged.surfaceSamples = std::move(samples);
+            terrainPreset = index;
+            terrainResampledNx = staged.nx;
+            terrainResampledSpacing = staged.spacing;
+            staged.surfaceDatum = 0;
+            staged.importedSurface = true;
+            std::snprintf(surfacePath.data(), surfacePath.size(), "%s",
+                          reinterpret_cast<const char *>(pathText.c_str()));
+            updateTerrainPreview();
+            error.clear();
+            status = l("Terrain preset staged; X follows model width, elevation is unchanged. Reset / apply.",
+                       "地表预设已选择，水平范围随模型宽度适配，高程保持不变；重置并应用后生效。");
+            return true;
+        } catch (const std::exception &e) {
+            error = e.what();
+            return false;
+        }
+    }
+    bool setTerrainPresetWidth(double width) {
+        const double intervals = width / staged.spacing;
+        if (terrainPreset < 0 || !std::isfinite(width) || width <= 0 ||
+            !std::isfinite(staged.spacing) || staged.spacing <= 0 ||
+            !std::isfinite(intervals) || intervals < 7 || intervals > maxAxisNodes - 1) {
+            error = l("This width requires X nodes outside 8..16384 or invalid spacing.",
+                      "当前宽度所需 X 节点超出 8..16384，或网格间距无效。");
+            return false;
+        }
+        staged.nx = static_cast<int>(std::round(intervals)) + 1;
+        fitAcquisition(staged);
+        if (!syncTerrainPreset())
+            return false;
+        error.clear();
+        return true;
+    }
+    void terrainPresetControls() {
+        ImGui::TextUnformatted(l("Surface presets (fit model width)", "地表预设（适配模型宽度）"));
+        ImGui::SetNextItemWidth(-1);
+        if (ImGui::BeginCombo("##surfacePreset", terrainPreset < 0 ? l("Custom / file / analytic", "自定义 / 文件 / 解析地表")
+                                                                       : l(surfacePresets[terrainPreset].en, surfacePresets[terrainPreset].zh))) {
+            if (ImGui::Selectable(l("Custom / file / analytic", "自定义 / 文件 / 解析地表"), terrainPreset < 0)) {
+                terrainPreset = -1;
+                terrainPresetSource.clear(); // Freeze current samples; do not stretch imported measurements.
+            }
+            for (int i = 0; i < static_cast<int>(surfacePresets.size()); ++i)
+                if (ImGui::Selectable(l(surfacePresets[i].en, surfacePresets[i].zh), terrainPreset == i))
+                    chooseTerrainPreset(i);
+            ImGui::EndCombo();
+        }
+        if (terrainPreset < 0)
+            return;
+        for (int km : {1, 2, 4}) {
+            if (km != 1)
+                ImGui::SameLine();
+            const auto name = std::to_string(km) + " km";
+            if (ImGui::Button(name.c_str()))
+                setTerrainPresetWidth(km * 1000.);
+        }
+        syncTerrainPreset();
+        ImGui::TextWrapped("%s", l("Original 1 km shape is stretched horizontally and PCHIP-sampled at grid nodes. "
+                                   "Elevation and datum stay unchanged; slopes change. Width buttons keep spacing and round X nodes.",
+                                   "由原始 1 km 数据水平拉伸，并按网格节点保形插值。高程、基准保持不变，坡度会变化；宽度按钮保持间距，X 节点取整，以待应用尺寸为准。"));
+    }
     bool loadTerrain() {
         SurfaceSamples samples;
         if (!readSurfaceProfile(
@@ -542,6 +653,8 @@ struct Workbench {
             return false;
         }
         staged.surfaceSamples = std::move(samples);
+        terrainPreset = -1;
+        terrainPresetSource.clear();
         staged.surfaceDatum = datum;
         staged.importedSurface = true;
         updateTerrainPreview();
@@ -681,6 +794,7 @@ struct Workbench {
                                        "Coordinates must increase strictly. PCHIP interpolation is used.",
                                        "CSV/TXT 两列：x_m, elevation_m（高程向上为正），可有表头；X "
                                        "必须严格递增。采用保形三次 Hermite 插值。"));
+            terrainPresetControls();
             ImGui::SetNextItemWidth(-1);
             if (ImGui::BeginCombo("##terrainExample", l("Choose an elevation example…", "选择示例高程…"))) {
                 for (const auto &example : elevationExamples)
@@ -712,7 +826,12 @@ struct Workbench {
                 ImGui::TextWrapped("%zu %s | X %.3f .. %.3f m | %s %.3f m", v.size(), l("samples", "个样点"),
                                    v.front()[0], v.back()[0], l("required span", "所需覆盖"),
                                    (staged.nx - 1) * staged.spacing);
-                ImGui::TextWrapped("%s", l("Initial datum is mean elevation. Model depth z = datum - "
+                if (terrainPreset >= 0)
+                    ImGui::TextWrapped("%s", l("Preset datum starts at 0 m; width adaptation preserves your datum. "
+                                               "Model depth z = datum - elevation. Reset / apply rebuilds geometry and dt.",
+                                               "预设基准初始为 0 m；宽度适配保留已设基准。模型深度 z=基准−高程，重置并应用会重建几何与 dt。"));
+                else
+                    ImGui::TextWrapped("%s", l("Initial datum is mean elevation. Model depth z = datum - "
                                            "elevation. Reset / apply rebuilds geometry, normals and dt.",
                                            "初始基准为样点高程平均值，模型深度 "
                                            "z=基准−高程。重置并应用会重新生成网格、法向和 dt。"));
@@ -826,6 +945,7 @@ struct Workbench {
                 input("Spacing (m)", "网格间距（m）", staged.spacing, .5);
                 ImGui::TextWrapped("%s: %.2f x %.2f m", l("Staged span", "待应用尺寸"),
                                    (staged.nx - 1) * staged.spacing, (staged.nz - 1) * staged.spacing);
+                terrainPresetControls();
                 const double nodes = (static_cast<double>(std::max(0, staged.nx)) + 6) *
                                      (static_cast<double>(std::max(0, staged.nz)) + 6);
                 ImGui::TextWrapped(
@@ -1088,6 +1208,11 @@ struct Workbench {
         const float half = (ImGui::GetContentRegionAvail().x - ImGui::GetStyle().ItemSpacing.x) / 2;
         if (button("Undo edits", "撤销修改", FunctionRole3D::Display, {half, 0})) {
             staged = simulation.parameters();
+            terrainPreset = activeTerrainPreset;
+            terrainPresetSource = activeTerrainPresetSource;
+            terrainResampledNx = staged.nx;
+            terrainResampledSpacing = staged.spacing;
+            updateTerrainPreview();
             settings = activeSettings;
             selectedBackend = static_cast<int>(simulation.backend().kind);
             error.clear();
@@ -1095,6 +1220,8 @@ struct Workbench {
         ImGui::SameLine();
         if (button("Defaults", "恢复默认", FunctionRole3D::Display, {half, 0})) {
             staged = Parameters{};
+            terrainPreset = -1;
+            terrainPresetSource.clear();
             error.clear();
         }
         if (!error.empty()) {
@@ -1931,6 +2058,32 @@ int runWorkbench2D(bool smoke, bool homeTest) {
                     if (!app.loadTerrain() || !app.apply() || !app.simulation.advance(1, app.error))
                         throw std::runtime_error(app.error);
                 }
+                app.staged.nz = 96;
+                app.staged.spacing = 10;
+                app.staged.frequency = 5;
+                app.staged.sourceZ = 20;
+                app.staged.duration = .01;
+                app.staged.maxSteps = 2;
+                for (int i = 0; i < static_cast<int>(surfacePresets.size()); ++i) {
+                    if (!app.chooseTerrainPreset(i))
+                        throw std::runtime_error(app.error);
+                    for (int km : {1, 2, 4}) {
+                        if (!app.setTerrainPresetWidth(km * 1000.) || !app.apply() ||
+                            !app.simulation.advance(1, app.error) ||
+                            app.simulation.parameters().surfaceSamples.back()[0] != km * 1000.0 ||
+                            app.simulation.parameters().surfaceDatum != 0 || app.staged.spacing != 10 ||
+                            app.staged.nz != 96)
+                            throw std::runtime_error("Terrain preset did not follow edited model width: " + app.error);
+                    }
+                    app.staged.nx = 301; // Also exercise direct geometry edits, without the width helper.
+                    app.staged.surfaceDatum = 17;
+                    if (!app.apply() || app.staged.surfaceSamples.back()[0] != 3000 ||
+                        app.staged.surfaceDatum != 17)
+                        throw std::runtime_error("Direct X edit lost preset coverage or user datum");
+                }
+                if (!app.setTerrainPresetWidth(4000) || !app.apply())
+                    throw std::runtime_error(app.error);
+                std::cout << "2D terrain presets UI PASS: all eight presets adapt from original data to 1/2/4 km\n";
                 app.openTerrain = true;
             }
             if (frame == 112) {
