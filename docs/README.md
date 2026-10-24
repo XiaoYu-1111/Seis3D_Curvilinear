@@ -2,6 +2,7 @@
 
 | 内容 | 入口 |
 | --- | --- |
+| 项目背景、方法概览、软件架构、界面、应用与参考文献 | [仓库首页说明](../README.md) |
 | 不同主频四组实验、面波频散及反演恢复的可配置重绘 | [实验绘图 Notebook](../tools/seismic_plotting/README.md) |
 | 二维/三维模型 VTS 复现与所选波场分量、记录导出 | [模型与波场数据交换](MODEL_AND_WAVEFIELD_IO.md) |
 | 实际 DEM 预览、横/纵剖面、范围选择与 CSV 导出 | [DEM 剖面提取 Notebook](../tools/dem_profiles/README.md) |
