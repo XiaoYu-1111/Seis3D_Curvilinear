@@ -1,0 +1,112 @@
+{
+  "output_dir": "out/replots/inversion",
+  "font_family": "Microsoft YaHei",
+  "font_size": 12,
+  "dpi": 180,
+  "formats": [
+    "png",
+    "pdf"
+  ],
+  "record_cmap": "gray",
+  "interpolation": "bilinear",
+  "input_dir": "out/surface_wave_masw/analysis_20261024/inversion",
+  "results_csv": [
+    "results.csv",
+    "refined_results.csv"
+  ],
+  "main_id": "main_fixed_start2",
+  "fit_csv": "results.csv_main_fixed_start2_fit.csv",
+  "theory_curve_csv": "../../theoretical_dispersion.csv",
+  "truth": {
+    "vs_m_s": [
+      250,
+      500,
+      800,
+      1250
+    ],
+    "thickness_m": [
+      10,
+      20,
+      40
+    ]
+  },
+  "initial_vs_m_s": [
+    280,
+    480,
+    800,
+    1250
+  ],
+  "free_vs": [
+    true,
+    true,
+    false,
+    false
+  ],
+  "depth_max_m": 100,
+  "shallow_depth_m": 35,
+  "shallow_vs_limits_m_s": [
+    200,
+    600
+  ],
+  "multistart_groups": [
+    {
+      "title": "深层Vs固定",
+      "ids": [
+        "main_fixed_start1",
+        "main_fixed_start2",
+        "main_fixed_start3"
+      ],
+      "labels": [
+        "初值1",
+        "初值2",
+        "初值3"
+      ]
+    },
+    {
+      "title": "全部Vs自由",
+      "ids": [
+        "all_vs_free_start1",
+        "all_vs_free_start2",
+        "all_vs_free_start3"
+      ],
+      "labels": [
+        "初值1",
+        "初值2",
+        "初值3"
+      ]
+    }
+  ],
+  "thickness_scan": {
+    "id_prefixes": [
+      "thickness_"
+    ],
+    "layer_index": 0,
+    "velocity_layer_index": 1
+  },
+  "sensitivity_cases": [
+    {
+      "id": "main_fixed_start2",
+      "label": "B10 0.25m"
+    },
+    {
+      "id": "Q_H050",
+      "label": "0.5m网格"
+    },
+    {
+      "id": "Q_H0125",
+      "label": "0.125m网格"
+    },
+    {
+      "id": "window_20_100",
+      "label": "20–100m窗口"
+    },
+    {
+      "id": "window_80_260",
+      "label": "80–260m窗口"
+    },
+    {
+      "id": "extended_8_40",
+      "label": "8–40Hz频带"
+    }
+  ]
+}

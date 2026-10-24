@@ -1,5 +1,6 @@
 #include "PointKernels2D.hpp"
 #include "PointKernels3D.hpp"
+#include "MemoryBudget2D.hpp"
 #include "Seis2D/CurvilinearSolver2D.hpp"
 #include "Seis2D/SurfacePresets.hpp"
 #include <algorithm>
@@ -23,6 +24,194 @@ void compare(const std::vector<double> &a, const std::vector<double> &b) {
         error = std::max(error, std::abs(a[i] - b[i]));
     }
     check(error < 1e-9 * std::max(peak, 1e-25), "2D CPU/CUDA numerical mismatch");
+}
+void expandedSessionLimits() {
+    const auto cuda = Seis3D::Curvilinear::queryBackend3D(BackendKind3D::Cuda);
+    std::string error;
+    Snapshot reference;
+    for (auto backend : {BackendKind3D::Cpu, BackendKind3D::Cuda}) {
+        if (backend == BackendKind3D::Cuda && !cuda.available)
+            continue;
+        const ComputeSettings3D settings{1, cuda.cudaDevice};
+        Parameters p;
+        p.nx = p.nz = 48; p.spacing = .25; p.relief = 0;
+        p.vp = 2300; p.vs = 1250; p.density = 2200;
+        p.sourceZ = 4; p.receiverCount = 4;
+        p.duration = 2; p.frequency = 20; p.cfl = .6;
+        p.maxSteps = 0; p.sampleIntervalMs = .5;
+        Simulation session;
+        check(session.initialize(p, error, backend, settings), error.c_str());
+        check(session.totalSteps() == 43370 && session.totalSteps() * session.dt() == p.duration,
+              "Full-duration 2D fine-grid plan still has the old 20000-step ceiling");
+        const double dt = session.dt();
+        p.maxSteps = 25000;
+        check(session.initialize(p, error, backend, settings) && session.totalSteps() == 25000 &&
+                  session.dt() == dt, "Extended explicit cap changed dt or was rejected");
+        auto bad = p;
+        bad.maxSteps = maxTimeSteps + 1;
+        check(!session.initialize(bad, error, backend, settings) && session.totalSteps() == 25000,
+              "Invalid cap was accepted or destroyed the active session");
+        bad = p; bad.maxSteps = 0; bad.duration = 10;
+        check(!session.initialize(bad, error, backend, settings) &&
+                  error.find("200000 accepted steps") != std::string::npos && session.totalSteps() == 25000,
+              "Full-duration run bypassed the new ceiling or destroyed the active session");
+        p.maxSteps = maxTimeSteps;
+        check(session.initialize(p, error, backend, settings) && session.totalSteps() == 43370,
+              "New maximum explicit step cap was rejected");
+
+        // Exercise 50 m / 25 m sponges at h=0.25 on both backends.
+        // The maximum corner damping diagnoses the widths actually used by the kernel.
+        p.nx = 601; p.nz = 401; p.duration = .001; p.maxSteps = 2;
+        p.spongeX = 200; p.spongeZ = 100;
+        check(session.initialize(p, error, backend, settings), error.c_str());
+        const auto checkDamping = [&] {
+            const int wx = std::min(p.spongeX, p.nx / 3), wz = std::min(p.spongeZ, p.nz / 3);
+            const double expected = .5 / (p.spongeStrength * p.vp / p.spacing * (1. / wx + 1. / wz));
+            check(std::abs(session.diagnostics().dampingDt / expected - 1) < 1e-12,
+                  "Sponge widths were still clipped to 64 cells or no longer obey the per-axis geometry limit");
+        };
+        checkDamping();
+        check(session.advance(2, error) && session.diagnostics().finite, error.c_str());
+        if (backend == BackendKind3D::Cpu)
+            reference = session.snapshot();
+        else {
+            const auto actual = session.snapshot();
+            for (int f = 0; f < 5; ++f) compare(reference.fields[f], actual.fields[f]);
+        }
+        bad = p; bad.spongeX = maxSpongeCells + 1;
+        check(!session.initialize(bad, error, backend, settings) && session.step() == 2,
+              "Out-of-range sponge width was accepted or destroyed the active session");
+        p.spongeX = p.spongeZ = maxSpongeCells;
+        check(session.initialize(p, error, backend, settings), error.c_str());
+        checkDamping();
+        std::cout << "PASS expanded 2D limits: backend=" << static_cast<int>(backend)
+                  << ", 43370-step plan, cap 25000/200000, 200/100-cell sponges, 512-cell axis clamp\n";
+    }
+    Parameters p;
+    p.nx = p.nz = 8; p.sourceZ = 2; p.relief = 0;
+    p.receiverStart = 2; p.receiverCount = 2; p.receiverStride = 1;
+    p.maxSteps = 0; p.sampleIntervalMs = 0;
+    const auto budget = Detail::memoryBudget(p, BackendKind3D::Cpu);
+    check(budget.hostBytes == 14. * 14 * 480 + 2. * (maxTimeSteps + 1) * 2 * sizeof(double),
+          "Per-step memory preflight still budgets only 20001 records");
+    // Tiny source-controlled run tests counters and final raw sampling past 20000;
+    // it is not an accuracy/dispersion experiment at this ultrasonic frequency.
+    p.frequency = 1e6; p.duration = .00042; p.forcePerLength = 1;
+    Simulation longRun;
+    check(longRun.initialize(p, error, BackendKind3D::Cpu, {1}), error.c_str());
+    check(longRun.totalSteps() > 20000 && longRun.advance(longRun.totalSteps(), error), error.c_str());
+    check(longRun.completed() && longRun.step() == longRun.totalSteps() &&
+              longRun.receivers().front().vz.size() == static_cast<std::size_t>(longRun.step()) + 1 &&
+              std::abs(longRun.step() * longRun.dt() - p.duration) < 1e-15,
+          "Run past 20000 steps truncated the endpoint or raw receiver samples");
+    std::cout << "PASS long 2D counter/sampling run: " << longRun.step() << " accepted steps\n";
+}
+void memoryAndReapply() {
+    Parameters p;
+    p.nx = 5001; p.nz = 2001; p.spacing = 2;
+    p.source.kind = SeisWave::SourceKind::IsotropicMoment;
+    p.duration = 3; p.maxSteps = 0; p.sampleIntervalMs = .5; p.receiverCount = 250;
+    const auto cpu = Detail::memoryBudget(p, BackendKind3D::Cpu);
+    const auto gpu = Detail::memoryBudget(p, BackendKind3D::Cuda);
+    constexpr double nodes = 5007. * 2007.;
+    constexpr double records = 250. * 6001 * 2 * sizeof(double);
+    check(cpu.hostBytes == nodes * 62 * sizeof(double) + records && cpu.deviceBytes == 0,
+          "CPU memory budget lost RK fields or records");
+    check(gpu.hostBytes == nodes * 20 * sizeof(double) + records &&
+              gpu.deviceBytes == nodes * 50 * sizeof(double),
+          "CUDA budget must separate host geometry from device RK fields");
+    p.source.kind = SeisWave::SourceKind::DirectionalForce;
+    const auto force = Detail::memoryBudget(p, BackendKind3D::Cuda);
+    check(gpu.hostBytes - force.hostBytes == nodes * 2 * sizeof(double) &&
+              gpu.deviceBytes - force.deviceBytes == nodes * 2 * sizeof(double),
+          "Moment gradient buffers missing from budget");
+    const auto cuda = Seis3D::Curvilinear::queryBackend3D(BackendKind3D::Cuda);
+    for (auto kind : {BackendKind3D::Cpu, BackendKind3D::Cuda}) {
+        if (kind == BackendKind3D::Cuda && !cuda.available)
+            continue;
+        p = Parameters{};
+        p.nx = 40; p.nz = 48; p.sourceZ = 12; p.receiverCount = 18;
+        p.source.kind = SeisWave::SourceKind::IsotropicMoment;
+        p.duration = .03; p.maxSteps = 8;
+        const ComputeSettings3D settings{1, cuda.cudaDevice};
+        Simulation s;
+        std::string error;
+        check(s.initialize(p, error, kind, settings) && s.advance(8, error), error.c_str());
+        const auto *coordinates = s.grid().coordinates.data();
+        const auto *recordStorage = s.receivers().front().vx.data();
+        check(s.initialize(p, error, kind, settings), error.c_str());
+        check(s.grid().coordinates.data() == coordinates && s.receivers().front().vx.data() == recordStorage,
+              "Unchanged apply allocated a duplicate session");
+        check(s.step() == 0 && s.receivers().front().vx == std::vector<double>{0} &&
+                  s.diagnostics().energy == 0 && s.diagnostics().totalStepMs == 0,
+              "Reapplied session did not clear fields, time or records");
+        const auto fields = s.snapshot();
+        for (const auto &field : fields.fields)
+            check(std::all_of(field.begin(), field.end(), [](double v) { return v == 0; }),
+                  "Reapplied session retained nonzero wavefields");
+        check(s.advance(2, error), error.c_str());
+        auto bad = p;
+        bad.nx = maxAxisNodes + 1;
+        check(!s.initialize(bad, error, kind, settings) && s.step() == 2 &&
+                  s.grid().coordinates.data() == coordinates,
+              "Rejected replacement discarded the active session");
+        p.frequency += 1;
+        check(s.initialize(p, error, kind, settings) && s.grid().coordinates.data() != coordinates &&
+                  s.parameters().frequency == p.frequency,
+              "Changed parameters incorrectly reused the old model");
+        std::cout << "PASS memory budget/reapply/reset/failure retention: backend=" << static_cast<int>(kind) << '\n';
+    }
+}
+// Explicit opt-in allocation check; builds the full acquisition and display
+// storage but never advances a wavefield or runs the experiment.
+void capacity(const std::filesystem::path &terrain) {
+    const auto cuda = Seis3D::Curvilinear::queryBackend3D(BackendKind3D::Cuda);
+    check(cuda.available, cuda.description.c_str());
+    std::string error;
+    SurfaceSamples samples;
+    if (!terrain.empty())
+        check(readSurfaceProfile(terrain, samples, error), error.c_str());
+    const auto memory = [&](const char *stage) {
+        const auto m = Seis3D::Curvilinear::queryBackendMemory3D(BackendKind3D::Cuda, cuda.cudaDevice);
+        std::cout << stage << ": free RAM=" << m.hostAvailableBytes / (1024. * 1024 * 1024)
+                  << " GiB, VRAM=" << m.deviceAvailableBytes / (1024. * 1024 * 1024) << " GiB\n";
+    };
+    for (bool imported : {false, true}) {
+        if (imported && samples.empty())
+            continue;
+        Parameters p;
+        p.nx = 5001; p.nz = 2001; p.spacing = 2; p.relief = 0; p.flattenDepth = 1000;
+        p.frequency = 15; p.duration = 3; p.cfl = .6; p.maxSteps = 0;
+        p.source.kind = SeisWave::SourceKind::IsotropicMoment;
+        p.sourceZ = 15; p.receiverStart = 10; p.receiverStride = 20;
+        p.receiverCount = 250; p.receiverDepth = 0; p.sampleIntervalMs = .5;
+        p.spongeX = p.spongeZ = 64; p.layered = true;
+        p.layers = imported ? std::vector<Layer>{{20,1000,500,1800}, {40,1600,800,2000},
+                         {40,2300,1250,2200}, {900,3000,1700,2400}, {1000,3500,2000,2550}, {0,4200,2400,2700}}
+                            : std::vector<Layer>{{1000,3000,1700,2400}, {1000,3500,2000,2550}, {0,4200,2400,2700}};
+        p.importedSurface = imported; p.surfaceDatum = 1481.322148135886;
+        if (imported) p.surfaceSamples = samples;
+        memory(imported ? "Before terrain allocation" : "Before flat allocation");
+        {
+            Simulation s;
+            const ComputeSettings3D settings{1, cuda.cudaDevice};
+            check(s.initialize(p, error, BackendKind3D::Cuda, settings), error.c_str());
+            check(s.grid().coordinates.size() == 5007ULL * 2007 && s.receivers().size() == 250 && s.step() == 0,
+                  "Full model dimensions or acquisition mismatch");
+            std::vector<float> frame;
+            check(s.readFrame(0, frame, error) && frame.size() == 5001ULL * 2001, error.c_str());
+            memory("After allocation and display");
+            const auto *coordinates = s.grid().coordinates.data();
+            for (int repeat = 0; repeat < 3; ++repeat)
+                check(s.initialize(p, error, BackendKind3D::Cuda, settings) &&
+                          s.grid().coordinates.data() == coordinates && s.step() == 0, error.c_str());
+            memory("After three identical applies");
+            std::cout << "PASS capacity: " << (imported ? "terrain/LVL" : "flat")
+                      << " 5001x2001 h=2, steps planned=" << s.totalSteps() << ", dt=" << s.dt()
+                      << ", steps executed=" << s.step() << '\n';
+        }
+        memory("After session destruction");
+    }
 }
 void reduction() {
     Parameters p;
@@ -150,6 +339,13 @@ void reduction() {
 } // namespace
 int main(int argc, char **argv) {
     try {
+        if (argc > 1 && std::string(argv[1]) == "--capacity-2d") {
+            capacity(argc > 2 ? std::filesystem::path(argv[2]) : std::filesystem::path{});
+            return 0;
+        }
+        expandedSessionLimits();
+        if (argc > 1 && std::string(argv[1]) == "--limits-only") return 0;
+        memoryAndReapply();
         reduction();
         std::string error;
         {

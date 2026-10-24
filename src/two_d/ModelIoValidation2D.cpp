@@ -36,6 +36,10 @@ void roundTrip(const std::filesystem::path &out) {
     ComputeSettings3D settings; settings.cpuThreads = 1;
     for (int mode = 0; mode < 3; ++mode) {
         auto p = fixture();
+        if (mode == 1) {
+            p.maxSteps = maxTimeSteps;
+            p.spongeX = p.spongeZ = maxSpongeCells;
+        }
         p.sampleIntervalMs = .5;
         p.layered = mode != 0;
         p.layers = {{10, 1500, 700, 2050}, {0, 3200, 1800, 2250}};

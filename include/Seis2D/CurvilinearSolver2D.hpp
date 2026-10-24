@@ -12,6 +12,8 @@ using Seis3D::Curvilinear::BackendKind3D;
 using Seis3D::Curvilinear::ComputeSettings3D;
 inline constexpr int ghost = 3;
 inline constexpr int maxAxisNodes = 16384;
+inline constexpr int maxTimeSteps = 200000;
+inline constexpr int maxSpongeCells = 512;
 struct Layer {
     double thickness{}, vp{}, vs{}, density{};
     bool operator==(const Layer &) const = default;

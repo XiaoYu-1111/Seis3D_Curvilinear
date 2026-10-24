@@ -1,0 +1,178 @@
+{
+  "output_dir": "out/replots/four_frequency",
+  "font_family": "Microsoft YaHei",
+  "font_size": 12,
+  "dpi": 180,
+  "formats": [
+    "png",
+    "pdf"
+  ],
+  "record_cmap": "gray",
+  "interpolation": "bilinear",
+  "datasets": [
+    {
+      "label": "15Hz",
+      "root": "out/jingbian_15Hz_2m",
+      "cases": [
+        {
+          "id": "M00",
+          "folder": "01_M00_flat_no_lvl",
+          "label": "M00 平地无低速层"
+        },
+        {
+          "id": "M10",
+          "folder": "02_M10_terrain_no_lvl",
+          "label": "M10 起伏无低速层"
+        },
+        {
+          "id": "M01",
+          "folder": "03_M01_flat_lvl",
+          "label": "M01 平地有低速层"
+        },
+        {
+          "id": "M11",
+          "folder": "04_M11_terrain_lvl",
+          "label": "M11 起伏有低速层"
+        }
+      ]
+    },
+    {
+      "label": "30Hz",
+      "root": "out/jingbian_30Hz_2m",
+      "cases": [
+        {
+          "id": "M00",
+          "folder": "01_M00_flat_no_lvl",
+          "label": "M00 平地无低速层"
+        },
+        {
+          "id": "M10",
+          "folder": "02_M10_terrain_no_lvl",
+          "label": "M10 起伏无低速层"
+        },
+        {
+          "id": "M01",
+          "folder": "03_M01_flat_lvl",
+          "label": "M01 平地有低速层"
+        },
+        {
+          "id": "M11",
+          "folder": "04_M11_terrain_lvl",
+          "label": "M11 起伏有低速层"
+        }
+      ]
+    }
+  ],
+  "records": {
+    "modes": [
+      "raw",
+      "rms",
+      "agc"
+    ],
+    "clip_quantile": 0.997,
+    "agc_window_s": 0.3,
+    "agc_floor": 0.01,
+    "agc_clip": 3,
+    "agc_edge": "truncated"
+  },
+  "analysis": {
+    "exclude_edge_traces": 3,
+    "near_offset_m": 1000,
+    "late_start_s": 1.5,
+    "mirror_min_m": 400,
+    "mirror_max_m": 3000,
+    "spectrum_max_hz": 60,
+    "welch_samples": 2048
+  },
+  "models": {
+    "field": "Vp",
+    "cmap": "viridis",
+    "limits_m_s": [
+      1000,
+      4200
+    ],
+    "stride_x": 5,
+    "stride_z": 4,
+    "equal_aspect": true
+  },
+  "shallow_models": {
+    "stride_x": 1,
+    "stride_z": 1,
+    "depth_coordinate": "eta",
+    "crop_m": [
+      4800,
+      5200,
+      0,
+      160
+    ]
+  },
+  "snapshots": {
+    "enabled": true,
+    "components": [
+      "Vz"
+    ],
+    "times_s": [
+      0.5,
+      1.0,
+      2.0
+    ],
+    "stride_x": 5,
+    "stride_z": 4,
+    "cmap": "seismic",
+    "linthresh_fraction": 0.01,
+    "scale_scope": "global",
+    "equal_aspect": true,
+    "reference_depths_m": [
+      1000,
+      2000
+    ]
+  },
+  "reflection_reference": {
+    "enabled": true,
+    "depths_m": [
+      1000,
+      2000
+    ],
+    "geometry_reference_vp_m_s": 3000,
+    "xlim_m": [
+      3000,
+      7000
+    ],
+    "time_window_s": [
+      0.5,
+      1.8
+    ],
+    "background_profile": {
+      "boundaries_m": [
+        0,
+        1000,
+        2000,
+        4000
+      ],
+      "vp_m_s": [
+        3000,
+        3500,
+        4200
+      ]
+    },
+    "low_velocity_profile": {
+      "boundaries_m": [
+        0,
+        20,
+        60,
+        100,
+        1000,
+        2000,
+        4000
+      ],
+      "vp_m_s": [
+        1000,
+        1600,
+        2300,
+        3000,
+        3500,
+        4200
+      ]
+    }
+  }
+}

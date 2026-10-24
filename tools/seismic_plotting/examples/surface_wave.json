@@ -1,0 +1,202 @@
+{
+  "output_dir": "out/replots/surface_wave",
+  "font_family": "Microsoft YaHei",
+  "font_size": 12,
+  "dpi": 180,
+  "formats": [
+    "png",
+    "pdf"
+  ],
+  "record_cmap": "gray",
+  "interpolation": "bilinear",
+  "datasets": [
+    {
+      "label": "MASW20Hz",
+      "root": "out/surface_wave_masw/runs/run_20261023_02",
+      "cases": [
+        {
+          "id": "Q_UNIFORM",
+          "folder": "Q_UNIFORM",
+          "label": "均匀半空间",
+          "uniform_rayleigh_m_s": 234.4765685
+        },
+        {
+          "id": "B10",
+          "folder": "B10",
+          "label": "10m干黄土主模型"
+        },
+        {
+          "id": "Q_DEPTH200",
+          "folder": "Q_DEPTH200",
+          "label": "加深至200m"
+        },
+        {
+          "id": "Q_WIDTH1600",
+          "folder": "Q_WIDTH1600",
+          "label": "加宽至1600m"
+        },
+        {
+          "id": "Q_H050",
+          "folder": "Q_H050",
+          "label": "0.5m网格"
+        },
+        {
+          "id": "Q_H0125",
+          "folder": "Q_H0125",
+          "label": "0.125m网格"
+        }
+      ]
+    }
+  ],
+  "records": {
+    "modes": [
+      "raw",
+      "agc"
+    ],
+    "clip_quantile": 0.995,
+    "agc_window_s": 0.3,
+    "agc_floor": 0.03,
+    "agc_clip": 3,
+    "agc_edge": "reflect",
+    "agc_odd_window": true
+  },
+  "models": {
+    "field": "Vs",
+    "cmap": "viridis",
+    "limits_m_s": [
+      250,
+      1250
+    ],
+    "stride_x": 2,
+    "stride_z": 2,
+    "relative_x": true,
+    "crop_m": [
+      -20,
+      280,
+      0,
+      100
+    ],
+    "equal_aspect": true
+  },
+  "snapshots": {
+    "enabled": true,
+    "components": [
+      "Vz"
+    ],
+    "times_s": [
+      0.2,
+      0.6,
+      1.0,
+      1.5,
+      2.0
+    ],
+    "stride_x": 2,
+    "stride_z": 2,
+    "cmap": "RdBu_r",
+    "linthresh_fraction": 0.001,
+    "scale_scope": "per_time",
+    "relative_x": true,
+    "crop_m": [
+      -20,
+      280,
+      0,
+      100
+    ],
+    "equal_aspect": true
+  },
+  "theory_curve_csv": "out/surface_wave_masw/theoretical_dispersion.csv",
+  "dispersion": {
+    "component": "Vz",
+    "frequency_hz": [
+      4,
+      50,
+      0.25
+    ],
+    "velocity_m_s": [
+      180,
+      1200,
+      2
+    ],
+    "offset_windows_m": [
+      [
+        20,
+        100
+      ],
+      [
+        60,
+        180
+      ],
+      [
+        80,
+        260
+      ]
+    ],
+    "comparison_window_index": 1,
+    "anchor_case": "B10",
+    "tukey_fraction": 0.08,
+    "plot_frequency_hz": [
+      4,
+      45
+    ],
+    "plot_velocity_m_s": [
+      180,
+      1100
+    ]
+  },
+  "differences": {
+    "pairs": [
+      [
+        "B10",
+        "Q_DEPTH200"
+      ],
+      [
+        "B10",
+        "Q_WIDTH1600"
+      ],
+      [
+        "B10",
+        "Q_H0125"
+      ],
+      [
+        "Q_H050",
+        "Q_H0125"
+      ]
+    ],
+    "bandpass_hz": [
+      6,
+      40
+    ],
+    "time_windows_s": [
+      [
+        0,
+        2.5
+      ],
+      [
+        0,
+        0.8
+      ],
+      [
+        0.8,
+        2.5
+      ]
+    ],
+    "display_component": "Vz",
+    "smoothing_s": 0.005
+  },
+  "trace_overlay": {
+    "component": "Vz",
+    "offsets_m": [
+      40,
+      100,
+      180,
+      260
+    ],
+    "cases": [
+      "B10",
+      "Q_DEPTH200",
+      "Q_WIDTH1600",
+      "Q_H050",
+      "Q_H0125"
+    ]
+  }
+}

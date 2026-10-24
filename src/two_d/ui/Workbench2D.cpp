@@ -1068,10 +1068,17 @@ struct Workbench {
             if (parameterGroup(l("Time / absorption", "时间与吸收层"), 0)) {
                 input("Duration (s)", "模拟时长（s）", staged.duration, .1);
                 integer("Maximum steps (0=duration)", "最大步数（0=按时长）", staged.maxSteps, 100, 1000);
+                ImGui::TextDisabled("%s: %d", l("2D accepted-step limit", "二维单次推进上限"), maxTimeSteps);
                 input("DRP CFL (0.02..0.8)", "DRP CFL（0.02..0.8）", staged.cfl, .02);
                 ImGui::Checkbox(l("Enable sponge", "启用吸收海绵层"), &staged.absorbing);
                 integer("X sponge cells", "X 方向吸收格数", staged.spongeX);
                 integer("Bottom sponge cells", "底部吸收格数", staged.spongeZ);
+                ImGui::TextDisabled("%s: 1..%d", l("Input cells", "可输入格数"), maxSpongeCells);
+                ImGui::TextWrapped("%s: X %.3f m / Z %.3f m (%s)",
+                                   l("Effective sponge width", "实际吸收宽度"),
+                                   std::clamp(staged.spongeX, 1, std::max(1, staged.nx / 3)) * staged.spacing,
+                                   std::clamp(staged.spongeZ, 1, std::max(1, staged.nz / 3)) * staged.spacing,
+                                   l("each axis <= nodes / 3; applied after rebuild", "每方向不超过节点数1/3，重建后生效"));
                 input("Sponge strength", "吸收强度", staged.spongeStrength, .1);
                 samplingControls();
             }

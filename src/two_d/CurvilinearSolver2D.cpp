@@ -1,5 +1,6 @@
 #include "Seis2D/CurvilinearSolver2D.hpp"
 #include "PointKernels2D.hpp"
+#include "MemoryBudget2D.hpp"
 #ifdef SEIS3D_HAS_CUDA
 #include "CudaEngine2D.hpp"
 #endif
@@ -10,6 +11,7 @@
 #include <iomanip>
 #include <limits>
 #include <locale>
+#include <sstream>
 #include <stdexcept>
 #ifdef SEIS3D_HAS_OPENMP
 #include <omp.h>
@@ -35,6 +37,7 @@ bool material(double vp, double vs, double rho) {
 } // namespace
 struct Simulation::Impl {
     Parameters p;
+    ComputeSettings3D settings;
     Grid grid;
     State fields[7];
     std::vector<double> lambda, mu, source, damping;
@@ -167,9 +170,9 @@ bool Simulation::initialize(const Parameters &p, std::string &error, BackendKind
                 "Require positive material values and positive elastic bulk modulus.");
         require(p.sampleIntervalMs == 0 || (p.sampleIntervalMs >= .01 && p.sampleIntervalMs <= 1000),
                 "Record interval must be 0 (each step) or 0.01..1000 ms.");
-        require(p.maxSteps >= 0 && p.maxSteps <= 20000 && settings.cpuThreads >= 0 &&
+        require(p.maxSteps >= 0 && p.maxSteps <= maxTimeSteps && settings.cpuThreads >= 0 &&
                     settings.cpuThreads <= 64,
-                "Step cap must be 0..20000; CPU workers must be 0..64.");
+                "Step cap must be 0..200000 (0 = full duration); CPU workers must be 0..64.");
         if (!SeisWave::validateSource(p.source, true, error))
             throw std::runtime_error(error);
         const bool explosive = p.source.kind == SeisWave::SourceKind::IsotropicMoment;
@@ -187,9 +190,9 @@ bool Simulation::initialize(const Parameters &p, std::string &error, BackendKind
                             (static_cast<long long>(p.receiverCount) - 1) * p.receiverStride <
                         p.nx,
                 "Receiver line is outside the 2D model or exceeds 1024 positions.");
-        require(p.spongeX >= 1 && p.spongeX <= 64 && p.spongeZ >= 1 && p.spongeZ <= 64 &&
+        require(p.spongeX >= 1 && p.spongeX <= maxSpongeCells && p.spongeZ >= 1 && p.spongeZ <= maxSpongeCells &&
                     p.spongeStrength >= .1 && p.spongeStrength <= 10,
-                "Sponge widths must be 1..64 and strength 0.1..10.");
+                "Sponge widths must be 1..512 cells (effective width <= axis nodes / 3) and strength 0.1..10.");
         if (p.layered) {
             require(!p.layers.empty() && p.layers.size() <= 16, "Require 1..16 material layers.");
             for (std::size_t l = 0; l < p.layers.size(); ++l) {
@@ -201,22 +204,41 @@ bool Simulation::initialize(const Parameters &p, std::string &error, BackendKind
         }
         const auto available = Seis3D::Curvilinear::queryBackend3D(kind, settings.cudaDevice);
         require(available.available, available.description.c_str());
+        // Applying an unchanged configuration only clears the wavefield and
+        // records. Reuse storage before checking space for a second full model.
+        if (impl_ && impl_->p == p && impl_->settings == settings && impl_->backend.kind == kind &&
+            impl_->backend.cudaDevice == available.cudaDevice) {
+            if (!reset(error))
+                return false;
+            impl_->diagnostics.initializationMs =
+                std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - begin).count();
+            return true;
+        }
         const std::size_t count = static_cast<std::size_t>(p.nx + 6) * (p.nz + 6);
         const auto memory = Seis3D::Curvilinear::queryBackendMemory3D(kind, available.cudaDevice);
-        const double bytes =
-            count * (60.0 + (explosive ? 2 : 0)) * sizeof(double) +
-            static_cast<double>(p.receiverCount) *
-                (p.sampleIntervalMs > 0 ? std::floor(p.duration / (p.sampleIntervalMs * .001)) + 1
-                                       : (p.maxSteps ? p.maxSteps + 1 : 20001)) * 2 * sizeof(double);
-        require(!memory.hostAvailableBytes || bytes < memory.hostAvailableBytes * .8,
-                "Insufficient RAM for a transactional 2D rebuild.");
+        const auto budget = Detail::memoryBudget(p, kind);
+        const auto requireMemory = [&](double bytes, std::uint64_t free, double fraction, const char *name) {
+            if (bytes < free * fraction)
+                return;
+            constexpr double gib = 1024. * 1024 * 1024;
+            std::ostringstream message;
+            message.imbue(std::locale::classic());
+            message << "Insufficient " << name << " for a transactional 2D rebuild. "
+                    << std::fixed << std::setprecision(2) << "Additional budget: " << bytes / gib
+                    << " GiB; available: " << free / gib << " GiB; required free with reserve: "
+                    << bytes / fraction / gib << " GiB.";
+            if (impl_)
+                message << " The active model is retained until the replacement succeeds.";
+            throw std::runtime_error(message.str());
+        };
+        if (memory.hostAvailableBytes)
+            requireMemory(budget.hostBytes, memory.hostAvailableBytes, .8, "RAM");
         if (kind == BackendKind3D::Cuda)
-            require(memory.deviceAvailableBytes && count * (48.0 + (explosive ? 2 : 0)) * sizeof(double) <
-                                                       memory.deviceAvailableBytes * .85,
-                    "Insufficient VRAM for the 2D session.");
+            requireMemory(budget.deviceBytes, memory.deviceAvailableBytes, .85, "VRAM");
         auto next = std::make_unique<Impl>();
         auto &s = *next;
         s.p = p;
+        s.settings = settings;
         s.backend.kind = kind;
         s.backend.deviceName = available.description;
         s.backend.cudaDevice = available.cudaDevice;
@@ -366,7 +388,8 @@ bool Simulation::initialize(const Parameters &p, std::string &error, BackendKind
                 "Requested duration needs too many steps; increase spacing or lower frequency.");
         s.dt = p.duration / full;
         s.total = p.maxSteps ? std::min(static_cast<int>(full), p.maxSteps) : static_cast<int>(full);
-        require(s.total <= 20000, "2D session exceeds 20000 accepted steps; set a cap or shorter duration.");
+        require(s.total <= maxTimeSteps,
+                "2D session exceeds 200000 accepted steps; set an explicit cap or shorter duration. A cap ends before the requested duration.");
         for (int r = 0; r < p.receiverCount; ++r) {
             Receiver receiver;
             receiver.x = p.receiverStart + r * p.receiverStride;

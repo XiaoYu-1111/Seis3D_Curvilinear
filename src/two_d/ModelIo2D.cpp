@@ -178,7 +178,7 @@ bool readModelVts(const std::filesystem::path &path, ModelDocument &document, st
         REAL(spacing); REAL(vp); REAL(vs); REAL(density); REAL(relief); REAL(wavelength);
         REAL(flattenDepth); REAL(frequency); REAL(duration); REAL(cfl); REAL(forcePerLength);
         REAL(momentPerLength); INT(sourceX, -1, p.nx - 1); INT(sourceZ, 0, p.nz - 1);
-        INT(maxSteps, 0, 20000); INT(spongeX, 1, 64); INT(spongeZ, 1, 64); REAL(spongeStrength);
+        INT(maxSteps, 0, maxTimeSteps); INT(spongeX, 1, maxSpongeCells); INT(spongeZ, 1, maxSpongeCells); REAL(spongeStrength);
         INT(receiverStart, 0, p.nx - 1); INT(receiverCount, 1, 1024); INT(receiverStride, 1, maxAxisNodes);
         INT(receiverDepth, 0, p.nz - 1); REAL(sampleIntervalMs); REAL(surfaceDatum);
         p.absorbing = integer(scalar("Parameter_absorbing"), 0, 1) != 0;
